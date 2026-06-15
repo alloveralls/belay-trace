@@ -65,7 +65,38 @@ Repository-specific policy belongs in the repository `AGENTS.md`, not in this
 generic skill.
 "#;
 
+pub(crate) const CLAUDE_SKILL: &str = r#"---
+name: belay-trace
+description: Use when a task needs project plans, decisions, work history, review context, or trace updates through the local belay CLI.
+---
+
+# belay-trace
+
+## Retrieve context
+
+1. Run `belay context "<task>" --format agent --budget 2500` before broad historical reads.
+2. Use `belay search "<query>"` for targeted discovery.
+3. Use `belay show <id>` only when the full entry is needed.
+4. Avoid broad reads of `.belay/entries/` unless a command identifies a specific source path.
+
+## Update trace
+
+1. Use `belay add`, `belay link`, and `belay status <id> <status>` for structured updates.
+2. Run `belay sync` after direct managed Markdown edits.
+3. Run `belay doctor` when generated or active integration may be stale.
+
+## Conflict safety
+
+Never overwrite an unresolved sync conflict. Inspect both sides and use
+`belay sync --prefer markdown <id>` or `belay sync --prefer sqlite <id>` only
+after the intended source of truth is known.
+
+Repository-specific policy belongs in the repository `CLAUDE.md`, not in this
+generic skill.
+"#;
+
 const CODEX_SKILL_RELATIVE_PATH: &str = ".agents/skills/belay-trace/SKILL.md";
+const CLAUDE_SKILL_RELATIVE_PATH: &str = ".claude/skills/belay-trace/SKILL.md";
 
 #[derive(Debug)]
 struct FileSnapshot {
@@ -143,6 +174,11 @@ pub(crate) fn refresh_generated_assets(repository: &Repository) -> Result<(), Be
         &repository.root,
         &repository.belay_dir.join("agent/codex/SKILL.md"),
         CODEX_SKILL,
+    )?;
+    replace_if_changed(
+        &repository.root,
+        &repository.belay_dir.join("agent/claude/SKILL.md"),
+        CLAUDE_SKILL,
     )
 }
 
@@ -167,19 +203,42 @@ pub fn update_agents(repository: &Repository) -> Result<ActivationOutcome, Belay
 }
 
 pub fn install_codex_skill(repository: &Repository) -> Result<ActivationOutcome, BelayError> {
-    let path = repository.root.join(CODEX_SKILL_RELATIVE_PATH);
-    ensure_safe_directory_tree(&repository.root, Path::new(".agents/skills/belay-trace"))?;
+    install_skill(
+        repository,
+        Path::new(CODEX_SKILL_RELATIVE_PATH),
+        CODEX_SKILL,
+    )
+}
+
+pub fn install_claude_skill(repository: &Repository) -> Result<ActivationOutcome, BelayError> {
+    install_skill(
+        repository,
+        Path::new(CLAUDE_SKILL_RELATIVE_PATH),
+        CLAUDE_SKILL,
+    )
+}
+
+fn install_skill(
+    repository: &Repository,
+    relative_path: &Path,
+    expected: &str,
+) -> Result<ActivationOutcome, BelayError> {
+    let path = repository.root.join(relative_path);
+    let directory = relative_path
+        .parent()
+        .expect("agent skill path has a parent directory");
+    ensure_safe_directory_tree(&repository.root, directory)?;
     let existing = read_optional_regular_file(&path)?;
     let status = match existing.as_ref() {
         None => ActivationStatus::Created,
-        Some(existing) if existing.contents == CODEX_SKILL => ActivationStatus::Unchanged,
+        Some(existing) if existing.contents == expected => ActivationStatus::Unchanged,
         Some(_) => ActivationStatus::Updated,
     };
     if status != ActivationStatus::Unchanged {
         safe_write(
             &repository.root,
             &path,
-            CODEX_SKILL.as_bytes(),
+            expected.as_bytes(),
             existing.as_ref(),
         )?;
     }
@@ -199,6 +258,12 @@ pub fn doctor(repository: &Repository) -> Result<DoctorReport, BelayError> {
         CODEX_SKILL,
         CheckStatus::Present,
     )?;
+    let generated_claude_skill = check_exact_file(
+        "generated Claude skill",
+        repository.belay_dir.join("agent/claude/SKILL.md"),
+        CLAUDE_SKILL,
+        CheckStatus::Present,
+    )?;
     let agents = check_agents(repository)?;
     let installed_skill = check_exact_file(
         "installed Codex skill",
@@ -206,8 +271,21 @@ pub fn doctor(repository: &Repository) -> Result<DoctorReport, BelayError> {
         CODEX_SKILL,
         CheckStatus::Active,
     )?;
+    let installed_claude_skill = check_exact_file(
+        "installed Claude skill",
+        repository.root.join(CLAUDE_SKILL_RELATIVE_PATH),
+        CLAUDE_SKILL,
+        CheckStatus::Active,
+    )?;
 
-    let checks = vec![generated_snippet, agents, generated_skill, installed_skill];
+    let checks = vec![
+        generated_snippet,
+        agents,
+        generated_skill,
+        installed_skill,
+        generated_claude_skill,
+        installed_claude_skill,
+    ];
     let has_drift = checks
         .iter()
         .any(|check| matches!(check.status, CheckStatus::Missing | CheckStatus::Stale));

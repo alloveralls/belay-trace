@@ -45,7 +45,7 @@ Related Commands:
 const INIT_AFTER_HELP: &str = r#"Behavior and Side Effects:
   Creates or completes .belay/config.toml, managed entry directories, local SQLite
   state, .belay/.gitignore, and deterministic agent integration templates. Managed
-  generated templates are refreshed. AGENTS.md and Codex skills are modified only
+  generated templates are refreshed. AGENTS.md and agent skills are modified only
   by the explicit --update-agents and --install-skill options.
 
 Examples:
@@ -53,6 +53,7 @@ Examples:
   belay init
   belay init --update-agents
   belay init --install-skill codex
+  belay init --install-skill claude
 
 Exit Status:
   0  Repository initialized or already complete
@@ -355,6 +356,7 @@ struct InitArgs {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum SkillTarget {
     Codex,
+    Claude,
 }
 
 #[derive(Debug, Args)]
@@ -547,10 +549,17 @@ fn execute(cli: Cli, current_dir: &Path) -> Result<(), BelayError> {
                     activation.path.display()
                 );
             }
-            if let Some(SkillTarget::Codex) = arguments.install_skill {
-                let activation = agent::install_codex_skill(&outcome.repository)?;
+            if let Some(target) = arguments.install_skill {
+                let (name, activation) = match target {
+                    SkillTarget::Codex => {
+                        ("Codex", agent::install_codex_skill(&outcome.repository)?)
+                    }
+                    SkillTarget::Claude => {
+                        ("Claude", agent::install_claude_skill(&outcome.repository)?)
+                    }
+                };
                 println!(
-                    "Codex skill {}: {}",
+                    "{name} skill {}: {}",
                     activation.status.as_str(),
                     activation.path.display()
                 );
