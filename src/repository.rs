@@ -124,6 +124,7 @@ fn ensure_layout(repository: &Repository) -> Result<(), BelayError> {
     }
 
     ensure_managed_directory(&repository.belay_dir, Path::new("agent/codex"))?;
+    ensure_managed_directory(&repository.belay_dir, Path::new("agent/claude"))?;
 
     ensure_gitignore(&repository.belay_dir.join(".gitignore"))?;
     Ok(())
@@ -308,6 +309,7 @@ mod tests {
             ".belay/entries/reviews",
             ".belay/entries/notes",
             ".belay/agent/AGENTS.md.snippet",
+            ".belay/agent/claude/SKILL.md",
             ".belay/agent/codex/SKILL.md",
         ];
         for path in expected_paths {

@@ -22,6 +22,7 @@ directories, and generated agent integration templates. It does not modify
 ```sh
 belay init --update-agents
 belay init --install-skill codex
+belay init --install-skill claude
 ```
 
 For repositories that use belay as their trace system, keep the recommended
@@ -185,6 +186,7 @@ side effects, examples, and related commands.
     belay.sqlite
   agent/
     AGENTS.md.snippet
+    claude/SKILL.md
     codex/SKILL.md
 ```
 
