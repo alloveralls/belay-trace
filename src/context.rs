@@ -1,0 +1,711 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use rusqlite::params;
+
+use crate::entry::EntryType;
+use crate::error::BelayError;
+use crate::markdown::estimate_tokens;
+use crate::repository::Repository;
+use crate::search::{self, SearchRequest, SearchResult};
+
+const MIN_CONTEXT_BUDGET: usize = 64;
+const MINIMUM_EVIDENCE_BUDGET: usize = 40;
+const PRIMARY_RESULT_LIMIT: usize = 12;
+const LINKED_RESULT_LIMIT: usize = 20;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextFormat {
+    Human,
+    Agent,
+}
+
+#[derive(Debug)]
+pub struct ContextBundle {
+    pub text: String,
+    pub estimated_tokens: usize,
+    pub included_entries: usize,
+}
+
+#[derive(Debug)]
+struct Candidate {
+    result: SearchResult,
+    evidence: Vec<EvidenceUnit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EvidenceUnit {
+    section: String,
+    text: String,
+}
+
+struct SelectionContext<'a> {
+    format: ContextFormat,
+    header: &'a str,
+    budget: usize,
+    candidates: &'a [Candidate],
+    terms: &'a [String],
+}
+
+pub fn generate(
+    repository: &Repository,
+    task: &str,
+    format: ContextFormat,
+    budget: usize,
+) -> Result<ContextBundle, BelayError> {
+    if task.trim().is_empty() {
+        return Err(BelayError::Validation {
+            message: "context task must not be empty".to_owned(),
+        });
+    }
+    if budget < MIN_CONTEXT_BUDGET {
+        return Err(BelayError::Validation {
+            message: format!("context budget must be at least {MIN_CONTEXT_BUDGET} tokens"),
+        });
+    }
+
+    let primary = search::search(
+        repository,
+        &SearchRequest {
+            query: task.to_owned(),
+            entry_type: None,
+            status: None,
+            tag: None,
+            display_id: None,
+            limit: PRIMARY_RESULT_LIMIT,
+        },
+    )?;
+    let linked = search::linked_results(repository, &primary, LINKED_RESULT_LIMIT)?;
+    let terms = query_terms(task);
+    let mut candidates = load_candidates(repository, task, primary, true)?;
+    candidates.extend(load_candidates(repository, task, linked, false)?);
+
+    let selection_budget = budget.saturating_mul(9) / 10;
+    let task_budget = selection_budget.saturating_div(3).max(1);
+    let task = truncate_at_boundary(task.trim(), task_budget);
+    let header = render_header(format, &task, budget, selection_budget);
+    if estimate_tokens(&header) > selection_budget {
+        return Err(BelayError::Validation {
+            message: "context budget is too small for required output metadata".to_owned(),
+        });
+    }
+
+    let selection_context = SelectionContext {
+        format,
+        header: &header,
+        budget: selection_budget,
+        candidates: &candidates,
+        terms: &terms,
+    };
+    let mut selected = Vec::<(usize, Vec<EvidenceUnit>)>::new();
+    for (candidate_index, candidate) in candidates.iter().enumerate() {
+        let Some(first) = candidate.evidence.first() else {
+            continue;
+        };
+        if let Some(fitted) =
+            fit_minimum_evidence(&selection_context, &selected, candidate_index, first)
+        {
+            selected.push((candidate_index, vec![fitted]));
+        }
+    }
+
+    distribute_remaining_budget(
+        format,
+        &header,
+        selection_budget,
+        &candidates,
+        &mut selected,
+        &terms,
+    );
+
+    let mut output = render_selection(format, &header, &candidates, &selected);
+    if selected.is_empty() {
+        let no_results = match format {
+            ContextFormat::Agent => {
+                "\nNo relevant entries fit the selection budget.\nSuggested next read: belay search \"<keywords>\"\n"
+            }
+            ContextFormat::Human => {
+                "\nNo relevant entries fit the selection budget.\nFollow-up: belay search \"<keywords>\"\n"
+            }
+        };
+        if estimate_tokens(&(output.clone() + no_results)) <= selection_budget {
+            output.push_str(no_results);
+        }
+    }
+
+    let estimated_tokens = estimate_tokens(&output);
+    debug_assert!(estimated_tokens <= selection_budget);
+    Ok(ContextBundle {
+        text: output,
+        estimated_tokens,
+        included_entries: selected.len(),
+    })
+}
+
+fn load_candidates(
+    repository: &Repository,
+    task: &str,
+    results: Vec<SearchResult>,
+    primary: bool,
+) -> Result<Vec<Candidate>, BelayError> {
+    let database_path = repository.database_path();
+    let connection = crate::database::open(&database_path)?;
+    let terms = query_terms(task);
+    let mut candidates = Vec::new();
+
+    for result in results {
+        let mut statement = connection
+            .prepare(
+                "SELECT section, text FROM entry_chunks
+                 WHERE entry_id = ?1 ORDER BY ordinal",
+            )
+            .map_err(|source| BelayError::sqlite(&database_path, source))?;
+        let chunks = statement
+            .query_map(params![result.internal_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|source| BelayError::sqlite(&database_path, source))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|source| BelayError::sqlite(&database_path, source))?;
+
+        let mut evidence = chunks
+            .into_iter()
+            .flat_map(|(section, text)| evidence_units(&section, &text))
+            .collect::<Vec<_>>();
+        evidence.sort_by_key(|unit| evidence_priority(&result, unit, &terms, primary));
+        evidence.dedup();
+        candidates.push(Candidate { result, evidence });
+    }
+    Ok(candidates)
+}
+
+fn evidence_priority(
+    result: &SearchResult,
+    unit: &EvidenceUnit,
+    terms: &[String],
+    primary: bool,
+) -> (u8, u8, String) {
+    let section = unit.section.to_lowercase();
+    let text = unit.text.to_lowercase();
+    let text_match = terms.iter().any(|term| text.contains(term));
+    let section_match = terms.iter().any(|term| section.contains(term));
+    let matched_section = unit.section == result.section;
+    let important = important_sections(result.entry_type)
+        .iter()
+        .position(|preferred| section == preferred.to_lowercase());
+    let class = if text_match && primary && matched_section {
+        0
+    } else if text_match {
+        1
+    } else if section_match && primary && matched_section {
+        2
+    } else if (!primary && important.is_some()) || (primary && matched_section) {
+        3
+    } else {
+        4
+    };
+    (class, important.unwrap_or(usize::MAX).min(255) as u8, text)
+}
+
+fn important_sections(entry_type: EntryType) -> &'static [&'static str] {
+    match entry_type {
+        EntryType::Decision => &["Decision", "Rationale", "Risks"],
+        EntryType::Plan => &["Summary", "Objectives", "Success Criteria"],
+        EntryType::Work => &["Changes", "Validation", "Blockers"],
+        EntryType::Review => &["Findings", "Risks", "Recommendations"],
+        EntryType::Note => &["Summary", "Context", "Notes"],
+    }
+}
+
+fn evidence_units(section: &str, text: &str) -> Vec<EvidenceUnit> {
+    let mut units = Vec::new();
+    for paragraph in text
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        let mut prose = Vec::new();
+        for line in paragraph
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+        {
+            if is_list_item(line) {
+                units.push(EvidenceUnit {
+                    section: section.to_owned(),
+                    text: line.to_owned(),
+                });
+            } else {
+                prose.push(line);
+            }
+        }
+        if !prose.is_empty() {
+            units.extend(
+                split_sentences(&prose.join(" "))
+                    .into_iter()
+                    .map(|sentence| EvidenceUnit {
+                        section: section.to_owned(),
+                        text: sentence,
+                    }),
+            );
+        }
+    }
+    units
+}
+
+fn is_list_item(line: &str) -> bool {
+    if line.starts_with("- ") || line.starts_with("* ") || line.starts_with("+ ") {
+        return true;
+    }
+    let Some((number, remainder)) = line.split_once(". ") else {
+        return false;
+    };
+    !number.is_empty()
+        && number.chars().all(|character| character.is_ascii_digit())
+        && !remainder.is_empty()
+}
+
+fn split_sentences(text: &str) -> Vec<String> {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut sentences = Vec::new();
+    let mut start = 0;
+    for (index, character) in compact.char_indices() {
+        if matches!(character, '.' | '!' | '?' | '。' | '！' | '？') {
+            let end = index + character.len_utf8();
+            let sentence = compact[start..end].trim();
+            if !sentence.is_empty() {
+                sentences.push(sentence.to_owned());
+            }
+            start = end;
+        }
+    }
+    let remainder = compact[start..].trim();
+    if !remainder.is_empty() {
+        sentences.push(remainder.to_owned());
+    }
+    sentences
+}
+
+fn distribute_remaining_budget(
+    format: ContextFormat,
+    header: &str,
+    selection_budget: usize,
+    candidates: &[Candidate],
+    selected: &mut [(usize, Vec<EvidenceUnit>)],
+    terms: &[String],
+) {
+    if selected.is_empty() {
+        return;
+    }
+    let base_tokens = rendered_tokens(format, header, candidates, selected);
+    let remaining = selection_budget.saturating_sub(base_tokens);
+    let total_weight = (1..=selected.len())
+        .map(|rank| 1.0 / rank as f64)
+        .sum::<f64>();
+
+    for rank in 0..selected.len() {
+        let share = ((remaining as f64 * (1.0 / (rank + 1) as f64)) / total_weight) as usize;
+        let candidate_index = selected[rank].0;
+        let current_first_tokens = estimate_tokens(&selected[rank].1[0].text);
+        let expanded_first = truncate_evidence(
+            &candidates[candidate_index].evidence[0].text,
+            current_first_tokens + share,
+            terms,
+        );
+        selected[rank].1[0].text = expanded_first;
+        let mut used =
+            estimate_tokens(&selected[rank].1[0].text).saturating_sub(current_first_tokens);
+        for unit in candidates[candidate_index].evidence.iter().skip(1) {
+            let unit_tokens = estimate_tokens(&unit.text);
+            if used + unit_tokens > share {
+                let truncated = truncate_evidence(&unit.text, share.saturating_sub(used), terms);
+                if !truncated.is_empty() {
+                    selected[rank].1.push(EvidenceUnit {
+                        section: unit.section.clone(),
+                        text: truncated,
+                    });
+                }
+                break;
+            }
+            selected[rank].1.push(unit.clone());
+            used += unit_tokens;
+        }
+        while rendered_tokens(format, header, candidates, selected) > selection_budget {
+            if selected[rank].1.len() == 1 {
+                break;
+            }
+            selected[rank].1.pop();
+        }
+    }
+}
+
+fn fit_minimum_evidence(
+    context: &SelectionContext<'_>,
+    selected: &[(usize, Vec<EvidenceUnit>)],
+    candidate_index: usize,
+    evidence: &EvidenceUnit,
+) -> Option<EvidenceUnit> {
+    let capped_text = truncate_evidence(
+        &evidence.text,
+        estimate_tokens(&evidence.text).min(MINIMUM_EVIDENCE_BUDGET),
+        context.terms,
+    );
+    if capped_text.is_empty() {
+        return None;
+    }
+    let capped = EvidenceUnit {
+        section: evidence.section.clone(),
+        text: capped_text,
+    };
+    let mut trial = selected.to_vec();
+    trial.push((candidate_index, vec![capped.clone()]));
+    if rendered_tokens(context.format, context.header, context.candidates, &trial) <= context.budget
+    {
+        return Some(capped);
+    }
+
+    let mut low = 1;
+    let mut high = estimate_tokens(&capped.text);
+    let mut best = None;
+    while low <= high {
+        let middle = low + (high - low) / 2;
+        let text = truncate_evidence(&evidence.text, middle, context.terms);
+        if text.is_empty() {
+            low = middle + 1;
+            continue;
+        }
+        trial.last_mut().expect("candidate was added").1[0].text = text.clone();
+        if rendered_tokens(context.format, context.header, context.candidates, &trial)
+            <= context.budget
+        {
+            best = Some(EvidenceUnit {
+                section: evidence.section.clone(),
+                text,
+            });
+            low = middle + 1;
+        } else {
+            high = middle.saturating_sub(1);
+        }
+    }
+    best
+}
+
+fn truncate_evidence(text: &str, budget: usize, terms: &[String]) -> String {
+    if estimate_tokens(text) <= budget {
+        return text.to_owned();
+    }
+    if budget == 0 {
+        return String::new();
+    }
+
+    let words = text.split_whitespace().collect::<Vec<_>>();
+    let marker = list_marker(&words);
+    let matched = words.iter().position(|word| {
+        let normalized = word.to_lowercase();
+        terms.iter().any(|term| normalized.contains(term))
+    });
+    let Some(matched) = matched else {
+        return truncate_at_boundary(text, budget);
+    };
+
+    let mut start = matched;
+    let mut end = matched + 1;
+    let mut best = String::new();
+    loop {
+        let excerpt = words[start..end].join(" ");
+        let truncated = match (start > marker.len(), end < words.len()) {
+            (true, true) => format!("... {excerpt} ..."),
+            (true, false) => format!("... {excerpt}"),
+            (false, true) => format!("{excerpt} ..."),
+            (false, false) => excerpt,
+        };
+        let candidate = if start > 0 && !marker.is_empty() {
+            format!("{} {truncated}", marker.join(" "))
+        } else {
+            truncated
+        };
+        if estimate_tokens(&candidate) > budget {
+            break;
+        }
+        best = candidate;
+        if start == 0 && end == words.len() {
+            break;
+        }
+        start = start.saturating_sub(1);
+        if end < words.len() {
+            end += 1;
+        }
+    }
+    best
+}
+
+fn list_marker<'a>(words: &'a [&'a str]) -> &'a [&'a str] {
+    let Some(first) = words.first() else {
+        return &[];
+    };
+    if matches!(*first, "-" | "*" | "+")
+        && words
+            .get(1)
+            .is_some_and(|marker| matches!(*marker, "[ ]" | "[x]" | "[X]"))
+    {
+        return &words[..2];
+    }
+    if matches!(*first, "-" | "*" | "+") && words.get(1) == Some(&"[") && words.get(2) == Some(&"]")
+    {
+        return &words[..3];
+    }
+    if matches!(*first, "-" | "*" | "+")
+        || first
+            .strip_suffix('.')
+            .is_some_and(|number| !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
+    {
+        &words[..1]
+    } else {
+        &[]
+    }
+}
+
+fn render_header(
+    format: ContextFormat,
+    task: &str,
+    budget: usize,
+    selection_budget: usize,
+) -> String {
+    match format {
+        ContextFormat::Agent => format!(
+            "Context bundle\nTask: {task}\nFormat: agent\nBudget: {budget} estimated tokens\nSelection limit: {selection_budget} estimated tokens\n"
+        ),
+        ContextFormat::Human => format!(
+            "Context for: {task}\nFormat: human\nBudget: {budget} estimated tokens\nSelection limit: {selection_budget} estimated tokens\n"
+        ),
+    }
+}
+
+fn rendered_tokens(
+    format: ContextFormat,
+    header: &str,
+    candidates: &[Candidate],
+    selected: &[(usize, Vec<EvidenceUnit>)],
+) -> usize {
+    estimate_tokens(&render_selection(format, header, candidates, selected))
+}
+
+fn render_selection(
+    format: ContextFormat,
+    header: &str,
+    candidates: &[Candidate],
+    selected: &[(usize, Vec<EvidenceUnit>)],
+) -> String {
+    let mut output = header.to_owned();
+    let selected_by_type = selected.iter().fold(
+        BTreeMap::<EntryType, Vec<(usize, &Vec<EvidenceUnit>)>>::new(),
+        |mut groups, (index, evidence)| {
+            groups
+                .entry(candidates[*index].result.entry_type)
+                .or_default()
+                .push((*index, evidence));
+            groups
+        },
+    );
+    for entry_type in EntryType::ALL {
+        let Some(group) = selected_by_type.get(&entry_type) else {
+            continue;
+        };
+        output.push_str(&group_heading(format, entry_type));
+        for (index, evidence) in group {
+            output.push_str(&render_result(format, &candidates[*index].result, evidence));
+        }
+    }
+    output
+}
+
+fn render_result(
+    format: ContextFormat,
+    result: &SearchResult,
+    evidence: &[EvidenceUnit],
+) -> String {
+    let tags = if result.tags.is_empty() {
+        "none".to_owned()
+    } else {
+        result.tags.join(", ")
+    };
+    let excerpt = render_evidence(evidence);
+    match format {
+        ContextFormat::Agent => format!(
+            "- {}: {} [{}]\n  Why relevant: {}\n  Source: {}\n  Tags: {}\n  Evidence: {}\n  Next: belay show {}\n",
+            result.display_id,
+            result.title,
+            result.status,
+            result.reason,
+            result.source_path,
+            tags,
+            excerpt,
+            result.display_id
+        ),
+        ContextFormat::Human => format!(
+            "{} - {}\nStatus: {}\nRelevance: {}\nSource: {}\nTags: {}\nEvidence: {}\nFollow-up: belay show {}\n\n",
+            result.display_id,
+            result.title,
+            result.status,
+            result.reason,
+            result.source_path,
+            tags,
+            excerpt,
+            result.display_id
+        ),
+    }
+}
+
+fn render_evidence(evidence: &[EvidenceUnit]) -> String {
+    let mut sections = BTreeSet::new();
+    evidence
+        .iter()
+        .map(|unit| {
+            if sections.insert(unit.section.as_str()) {
+                format!("{}: {}", unit.section, unit.text)
+            } else {
+                unit.text.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn group_heading(format: ContextFormat, entry_type: EntryType) -> String {
+    let label = match entry_type {
+        EntryType::Plan => "Plans",
+        EntryType::Decision => "Decisions",
+        EntryType::Work => "Work",
+        EntryType::Review => "Reviews",
+        EntryType::Note => "Notes",
+    };
+    match format {
+        ContextFormat::Agent => format!("\nRelevant {}:\n", label.to_lowercase()),
+        ContextFormat::Human => format!("\n## {label}\n"),
+    }
+}
+
+fn query_terms(query: &str) -> Vec<String> {
+    query
+        .split_whitespace()
+        .map(|term| {
+            term.trim_matches(|character: char| {
+                !character.is_alphanumeric() && character != '_' && character != '-'
+            })
+        })
+        .filter(|term| !term.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+fn truncate_at_boundary(text: &str, budget: usize) -> String {
+    if estimate_tokens(text) <= budget {
+        return text.to_owned();
+    }
+    if budget == 0 {
+        return String::new();
+    }
+    let mut best = String::new();
+    for (index, character) in text.char_indices() {
+        let end = index + character.len_utf8();
+        if character.is_whitespace()
+            || matches!(character, '.' | '!' | '?' | '。' | '！' | '？' | ',' | '、')
+        {
+            let candidate = format!("{}...", text[..end].trim_end());
+            if estimate_tokens(&candidate) <= budget {
+                best = candidate;
+            } else {
+                break;
+            }
+        }
+    }
+    best
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn evidence_units_preserve_lists_and_sentence_boundaries() {
+        assert_eq!(
+            evidence_units("Findings", "- first finding\n- second finding"),
+            vec![
+                EvidenceUnit {
+                    section: "Findings".to_owned(),
+                    text: "- first finding".to_owned(),
+                },
+                EvidenceUnit {
+                    section: "Findings".to_owned(),
+                    text: "- second finding".to_owned(),
+                },
+            ]
+        );
+        assert_eq!(
+            split_sentences("First sentence. 日本語です。 Last one!"),
+            vec!["First sentence.", "日本語です。", "Last one!"]
+        );
+        assert_eq!(
+            evidence_units("Steps", "Lead in.\n1. first step\n2. second step"),
+            vec![
+                EvidenceUnit {
+                    section: "Steps".to_owned(),
+                    text: "1. first step".to_owned(),
+                },
+                EvidenceUnit {
+                    section: "Steps".to_owned(),
+                    text: "2. second step".to_owned(),
+                },
+                EvidenceUnit {
+                    section: "Steps".to_owned(),
+                    text: "Lead in.".to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn truncation_uses_boundaries_and_obeys_the_estimator() {
+        for budget in 0..30 {
+            let value = truncate_at_boundary("ASCII words and 日本語。 more context", budget);
+            assert!(estimate_tokens(&value) <= budget);
+            assert!(
+                value.is_empty()
+                    || value == "ASCII words and 日本語。 more context"
+                    || value.ends_with("...")
+            );
+        }
+    }
+
+    #[test]
+    fn evidence_truncation_keeps_ordered_list_marker_and_query() {
+        let value = truncate_evidence(
+            "1. background background background quartz final action",
+            10,
+            &["quartz".to_owned()],
+        );
+        assert!(value.starts_with("1."));
+        assert!(value.contains("quartz"));
+        assert!(estimate_tokens(&value) <= 10);
+    }
+
+    #[test]
+    fn evidence_truncation_keeps_task_list_state() {
+        let value = truncate_evidence(
+            "- [x] background background background quartz final action",
+            11,
+            &["quartz".to_owned()],
+        );
+        assert!(value.starts_with("- [x]"));
+        assert!(value.contains("quartz"));
+        assert!(estimate_tokens(&value) <= 11);
+
+        let unchecked = truncate_evidence(
+            "- [ ] background background background quartz final action",
+            11,
+            &["quartz".to_owned()],
+        );
+        assert!(unchecked.starts_with("- [ ]"));
+        assert!(unchecked.contains("quartz"));
+        assert!(estimate_tokens(&unchecked) <= 11);
+    }
+}

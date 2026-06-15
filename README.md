@@ -1,0 +1,195 @@
+# belay-trace
+
+`belay-trace` is a local-first CLI for preserving the plans, decisions, work
+logs, reviews, and notes behind AI-assisted software work.
+
+SQLite is the operational store. Deterministic Markdown files under
+`.belay/entries/` are the editable Git review and recovery surface.
+
+## Install And Initialize
+
+The v1 implementation requires Rust 1.87 or newer.
+
+```sh
+cargo build --release --locked
+./target/release/belay init
+```
+
+`belay init` creates `.belay/config.toml`, local SQLite state, managed entry
+directories, and generated agent integration templates. It does not modify
+`AGENTS.md` or install a skill unless explicitly requested:
+
+```sh
+belay init --update-agents
+belay init --install-skill codex
+```
+
+For repositories that use belay as their trace system, keep the recommended
+project instructions in the repository root `AGENTS.md`. The root file should
+make belay entries the source of truth for plans, decisions, work, and reviews.
+`belay init --update-agents` manages only the marker-scoped
+`<!-- belay-trace:start -->` / `<!-- belay-trace:end -->` section, so existing
+repository-specific instructions outside that section remain under normal human
+review.
+
+## Create And Link Traces
+
+Create entries non-interactively with inline content, a file, or standard input:
+
+```sh
+belay add decision \
+  --title "Use SQLite for operational state" \
+  --body "Keep local retrieval fast and rebuild from tracked Markdown."
+
+belay add work \
+  --title "Implement repository sync" \
+  --body-file ./work-notes.md
+
+printf '%s\n' "Review findings" | \
+  belay add review --title "Sync implementation review" --stdin
+```
+
+Entry types are `plan`, `decision`, `work`, `review`, and `note`. Commands print
+the generated display ID, for example:
+
+```text
+DEC-20260607T090000-001-use-sqlite
+```
+
+Use display IDs for links and status transitions:
+
+```sh
+belay link \
+  WRK-20260607T091000-001-implement-sync \
+  DEC-20260607T090000-001-use-sqlite \
+  --relation implements
+
+belay status DEC-20260607T090000-001-use-sqlite accepted
+belay show DEC-20260607T090000-001-use-sqlite
+```
+
+## Synchronize Markdown And SQLite
+
+Managed Markdown is editable. Import direct edits or regenerate stale mirrors:
+
+```sh
+belay sync
+belay sync DEC-20260607T090000-001-use-sqlite
+```
+
+When both sides changed, sync preserves both and exits with conflict category
+`5`. Resolve one entry explicitly:
+
+```sh
+belay sync --prefer markdown DEC-20260607T090000-001-use-sqlite
+belay sync --prefer sqlite DEC-20260607T090000-001-use-sqlite
+```
+
+Deletion does not propagate in v1. A missing SQLite row or mirror is restored
+from the remaining side.
+
+## Search And Context
+
+Search supports exact display IDs, structured filters, and deduplicated
+FTS5/BM25 keyword results:
+
+```sh
+belay search "sqlite migration"
+belay search --type decision --status accepted
+belay search --tag release
+belay search --id DEC-20260607T090000-001-use-sqlite
+```
+
+Generate bounded, source-attributed context for humans or agents:
+
+```sh
+belay context "implement repository sync" --format human --budget 2500
+belay context "implement repository sync" --format agent --budget 2500
+```
+
+Context selection follows BM25 relevance, then one-hop links in seed order. Every
+included entry retains at least one Markdown evidence unit; remaining space is
+weighted toward higher-ranked entries while preserving the 90 percent selection
+limit.
+
+Context uses direct links and a deterministic token estimate. Embeddings are not
+required for the v1 workflow.
+
+## Export Snapshots
+
+Exports are external point-in-time artifacts. They are not managed mirrors and
+are never sync or rebuild inputs.
+
+```sh
+belay export markdown --output ./artifacts/belay-export.md
+belay export json \
+  --type decision \
+  --status accepted \
+  --output ./artifacts/accepted-decisions.json
+belay export ndjson --tag release --output ./artifacts/release.ndjson
+belay export json \
+  --id DEC-20260607T090000-001-use-sqlite \
+  --output ./artifacts/decision.json
+```
+
+Filters are optional and combine with AND semantics. Export ordering is
+deterministic. Normal exports contain display IDs and never expose internal
+SQLite integer IDs. Destinations inside `.belay/entries/` are rejected.
+
+## Diagnose And Rebuild
+
+Run read-only repository health checks:
+
+```sh
+belay doctor
+```
+
+Doctor checks configuration, SQLite schema and foreign keys, FTS5/BM25,
+managed Markdown validity, sync drift, temporary files, and agent integration.
+
+Rebuild SQLite and search indexes from all validated managed Markdown:
+
+```sh
+belay rebuild
+```
+
+Rebuild uses a temporary database and replaces active state only after the new
+database is complete.
+
+## Exit Status
+
+| Code | Meaning |
+|---:|---|
+| `0` | success, help, or version |
+| `2` | invalid invocation or arguments |
+| `3` | repository not initialized or configuration unavailable |
+| `4` | input, entry, schema, path, or not-found validation failure |
+| `5` | sync conflict or repository drift requiring resolution |
+| `6` | filesystem, SQLite, storage, or runtime capability failure |
+
+Run `belay --help` or `belay <command> --help` for command-specific behavior,
+side effects, examples, and related commands.
+
+## Repository Layout
+
+```text
+.belay/
+  config.toml
+  entries/
+    plans/
+    decisions/
+    work/
+    reviews/
+    notes/
+  state/
+    belay.sqlite
+  agent/
+    AGENTS.md.snippet
+    codex/SKILL.md
+```
+
+The SQLite database is local operational state and ignored by Git by default.
+The managed Markdown entries are the tracked review and recovery surface.
+The root `AGENTS.md` is the recommended place for repository-specific agent
+workflow policy; `.belay/agent/AGENTS.md.snippet` is the generated integration
+snippet used by `belay init --update-agents`.

@@ -1,0 +1,39 @@
+name: pr-title
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - reopened
+      - synchronize
+
+jobs:
+  validate:
+    permissions:
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR title against Conventional Commits
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          regex='^(feat|fix|refactor|docs|test|chore|perf|ci)(\([^)]+\))?(!)?: .+$'
+
+          if [[ ! "$PR_TITLE" =~ $regex ]]; then
+            echo "Invalid PR title: $PR_TITLE"
+            echo "Expected format: <type>(optional-scope)!: description"
+            echo "Allowed types: feat, fix, refactor, docs, test, chore, perf, ci"
+            exit 1
+          fi
+
+          description="${PR_TITLE#*: }"
+          description_without_code="$(printf '%s' "$description" | sed -E 's/`[^`]*`//g')"
+
+          if printf '%s' "$description_without_code" | grep -q '[A-Z]'; then
+            echo "Invalid PR title description after removing code spans: $description_without_code"
+            echo "Original PR title: $PR_TITLE"
+            echo "Description must be lowercase to match repository commit rules."
+            exit 1
+          fi

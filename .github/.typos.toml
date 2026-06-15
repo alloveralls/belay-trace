@@ -1,0 +1,15 @@
+[default]
+extend-ignore-re = ["\\{[^}]+\\}"]
+
+[default.extend-words]
+alloveralls = "alloveralls"
+codeowners = "codeowners"
+docs-ci = "docs-ci"
+gh = "gh"
+jj = "jj"
+jujutsu = "jujutsu"
+lychee = "lychee"
+markdownlint = "markdownlint"
+re-review = "re-review"
+wrk = "wrk"
+"WRK" = "WRK"

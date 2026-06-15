@@ -1,0 +1,67 @@
+name: docs-ci
+
+on:
+  pull_request:
+    paths:
+      - README.md
+      - ".github/*.md"
+      - ".github/**/*.md"
+      - ".github/.markdownlint.json"
+      - ".github/.typos.toml"
+      - ".github/workflows/docs-ci.yml"
+  push:
+    paths:
+      - README.md
+      - ".github/*.md"
+      - ".github/**/*.md"
+      - ".github/.markdownlint.json"
+      - ".github/.typos.toml"
+      - ".github/workflows/docs-ci.yml"
+
+jobs:
+  markdownlint:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: DavidAnson/markdownlint-cli2-action@v20
+        with:
+          config: .github/.markdownlint.json
+          globs: |
+            README.md
+            .github/*.md
+            .github/**/*.md
+
+  links:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: lycheeverse/lychee-action@v2
+        with:
+          fail: true
+          args: >-
+            --verbose
+            --no-progress
+            --timeout 20
+            --max-concurrency 4
+            --retry-wait-time 2
+            --max-retries 2
+            README.md
+            .github/*.md
+            .github/**/*.md
+
+  typos:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: crate-ci/typos@v1.47.0
+        with:
+          config: .github/.typos.toml
+          files: |
+            README.md
+            .github/*.md

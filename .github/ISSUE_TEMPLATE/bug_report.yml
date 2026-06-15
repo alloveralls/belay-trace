@@ -1,0 +1,61 @@
+name: Bug report
+description: Report a defect with enough detail to reproduce and assess impact.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: 概要
+      description: 何が起きているかを簡潔に書いてください。
+      placeholder: "Example: PR title validation rejects a valid Conventional Commit title."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 再現手順
+      description: 再現に必要な手順を順番に書いてください。
+      placeholder: |
+        1. Open ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期待結果
+      description: 本来どうなるべきかを書いてください。
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 実際結果
+      description: 実際に起きたことを書いてください。
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: 影響範囲
+      description: 影響を受ける利用者、機能、運用を記載してください。
+      placeholder: "Example: Blocks PR merges for all documentation-only changes."
+    validations:
+      required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: 暫定回避策
+      description: 分かっている回避策があれば書いてください。
+    validations:
+      required: false
+  - type: textarea
+    id: references
+    attributes:
+      label: 関連資料
+      description: 参考リンク、ログ、スクリーンショット、関連PRなど。
+    validations:
+      required: false

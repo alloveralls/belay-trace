@@ -1,0 +1,869 @@
+use std::env;
+use std::ffi::OsString;
+use std::fs;
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
+
+use crate::agent;
+use crate::context;
+use crate::entry::{EntryStatus, EntryType, LinkRelation};
+use crate::error::BelayError;
+use crate::export;
+use crate::reconcile;
+use crate::repository;
+use crate::search::{self, SearchRequest};
+use crate::store::{self, MutationOutcome};
+
+const TOP_LEVEL_ABOUT: &str = "Preserve plans, decisions, work, and reviews in a local SQLite store with a tracked Markdown review surface.\n\nWorkflow groups:\n  Setup: init and doctor\n  Capture: add, link, status, and show\n  Reconcile: sync and rebuild\n  Retrieve: search, context, and export\n\nThe core workflow is: initialize a repository, add and link trace entries, synchronize direct Markdown edits, then retrieve focused context with search and context commands.";
+
+const TOP_LEVEL_AFTER_HELP: &str = r#"Behavior and Side Effects:
+  Project commands discover the current repository root and read .belay/config.toml.
+  `belay init` creates .belay/ state and tracked support files. It does not modify
+  AGENTS.md or install agent skills by default.
+
+Examples:
+  belay init
+  belay add decision --title "Use SQLite" --body "Keep operational state local."
+  belay search "sqlite migration"
+  belay context "implement repository sync" --format agent --budget 2500
+
+Exit Status:
+  0  Success, help, or version output
+  2  Invalid invocation or arguments
+  3  Repository not initialized or configuration unavailable
+  4  Entry, schema, input validation, not-found, or unavailable feature
+  5  Sync conflict or drift requiring explicit resolution
+  6  Storage, filesystem, SQLite, or runtime capability failure
+
+Related Commands:
+  Start with `belay init`. Use `belay <command> --help` for command-specific
+  behavior, side effects, examples, and related commands."#;
+
+const INIT_AFTER_HELP: &str = r#"Behavior and Side Effects:
+  Creates or completes .belay/config.toml, managed entry directories, local SQLite
+  state, .belay/.gitignore, and deterministic agent integration templates. Managed
+  generated templates are refreshed. AGENTS.md and Codex skills are modified only
+  by the explicit --update-agents and --install-skill options.
+
+Examples:
+  cd /path/to/repository
+  belay init
+  belay init --update-agents
+  belay init --install-skill codex
+
+Exit Status:
+  0  Repository initialized or already complete
+  2  Invalid invocation
+  3  Existing configuration is unavailable
+  4  Configuration validation failed
+  6  Filesystem, SQLite, migration, or runtime capability failure
+
+Related Commands:
+  `belay doctor` checks initialized state. `belay add --help` describes entry creation."#;
+
+const ADD_AFTER_HELP: &str = r#"Behavior and Side Effects:
+  Creates an entry in SQLite, updates chunks and FTS state, writes its deterministic
+  managed Markdown mirror, and records a sync baseline.
+
+Examples:
+  belay add decision --title "Use SQLite" --body "Keep operational state local."
+
+Exit Status:
+  0  Entry created
+  2  Invalid invocation
+  3  Repository not initialized
+  4  Entry type, title, body, or input validation failure
+  6  Storage failure
+
+Related Commands:
+  `belay link`, `belay status`, `belay show`, and `belay sync`."#;
+
+const LINK_AFTER_HELP: &str = r#"Behavior and Side Effects:
+  Adds a validated directional relationship between existing entries. Identical links
+  are idempotent. The source entry revision, mirror, and sync baseline are updated.
+  Allowed relations are references, implements, reviews, supersedes, and follows-up.
+
+Examples:
+  belay link WRK-20260606T120000-001-schema DEC-20260606T115000-001-sqlite --relation implements
+
+Exit Status:
+  0  Link created or already present
+  2  Invalid invocation
+  3  Repository not initialized
+  4  Invalid relation, invalid display ID, or entry not found
+  5  Unsynchronized Markdown or SQLite changes require `belay sync`
+  6  Storage failure
+
+Related Commands:
+  `belay add`, `belay show`, and `belay sync`."#;
+
+const STATUS_AFTER_HELP: &str = r#"Behavior and Side Effects:
+  Validates and applies a type-specific status. Setting the current status is an
+  idempotent no-op; changes update the entry revision, mirror, and sync baseline.
+  Status membership is validated for plan, decision, work, review, and note entries.
+
+Examples:
+  belay status DEC-20260606T115000-001-sqlite accepted
+
+Exit Status:
+  0  Status updated
+  2  Invalid invocation
+  3  Repository not initialized
+  4  Invalid status, invalid display ID, or entry not found
+  5  Unsynchronized Markdown or SQLite changes require `belay sync`
+  6  Storage failure
+
+Related Commands:
+  `belay show`, `belay link`, and `belay sync`."#;
+
+const SHOW_AFTER_HELP: &str = r#"Behavior and Side Effects:
+  Displays one complete entry, its managed source path, and inbound and outbound links
+  using display IDs. It does not change repository state.
+
+Examples:
+  belay show DEC-20260606T115000-001-sqlite
+
+Exit Status:
+  0  Entry displayed
+  2  Invalid invocation
+  3  Repository not initialized
+  4  Invalid display ID or entry not found
+  6  Storage failure
+
+Related Commands:
+  `belay search` and `belay context`."#;
+
+const SEARCH_AFTER_HELP: &str = r#"Behavior and Side Effects:
+  Performs exact display-ID lookup, structured filtering, or deduplicated
+  FTS5/BM25-ranked keyword retrieval. Search does not mutate repository state.
+  Plain query words are escaped as FTS terms; multiple words match with OR.
+
+Examples:
+  belay search "sqlite migration"
+  belay search --type decision --status accepted
+  belay search --id DEC-20260606T115000-001-sqlite
+
+Exit Status:
+  0  Search completed, including no matches
+  2  Invalid invocation
+  3  Repository not initialized
+  4  Query, filter, or limit validation error
+  6  Storage or runtime capability failure
+
+Related Commands:
+  `belay show` and `belay context`."#;
+
+const CONTEXT_AFTER_HELP: &str = r#"Behavior and Side Effects:
+  Produces source-attributed context from ranked matches and directly linked entries.
+  Selection preserves relevance order, guarantees evidence for every included entry,
+  and gives higher-ranked entries a larger share of remaining excerpt space.
+  Selection uses 90 percent of the requested budget, reserving 10 percent headroom.
+  Token estimates use ceil(ASCII UTF-8 bytes / 4) plus non-ASCII scalar count.
+  The default budget is 2500; budgets below 64 are rejected.
+  This command does not mutate repository state.
+
+Examples:
+  belay context "implement repository sync" --format agent --budget 2500
+
+Exit Status:
+  0  Context generated
+  2  Invalid invocation
+  3  Repository not initialized
+  4  Empty task or budget validation error
+  6  Storage failure
+
+Related Commands:
+  `belay search` and `belay show`."#;
+
+const SYNC_AFTER_HELP: &str = r#"Behavior and Side Effects:
+  Reconciles SQLite with managed Markdown using the last successful sync hashes.
+  Markdown-only changes are imported, SQLite-only changes are rendered, missing
+  counterparts are restored, and conflicts preserve both sides. Batch sync is
+  atomic per entry. Explicit --prefer resolution is entry-scoped.
+
+Examples:
+  belay sync
+  belay sync DEC-20260606T115000-001-sqlite
+  belay sync --prefer markdown DEC-20260606T115000-001-sqlite
+  belay sync --prefer sqlite DEC-20260606T115000-001-sqlite
+
+Exit Status:
+  0  Sync completed
+  2  Invalid invocation
+  3  Repository not initialized
+  4  Invalid Markdown, path, duplicate ID, or other validation error
+  5  Conflict requiring explicit resolution
+  6  Storage failure
+
+Related Commands:
+  `belay doctor`, `belay rebuild`, and `belay show`."#;
+
+const REBUILD_AFTER_HELP: &str = r#"Behavior and Side Effects:
+  Validates every managed Markdown entry before creating a temporary replacement
+  database. Restores entries, links, chunks, FTS, and fresh sync baselines. The
+  active database is replaced only after the temporary database is complete.
+
+Examples:
+  belay rebuild
+
+Exit Status:
+  0  Database rebuilt
+  2  Invalid invocation
+  3  Repository not initialized
+  4  Mirror, relationship, or schema validation error
+  6  Filesystem or SQLite failure
+
+Related Commands:
+  `belay sync` and `belay doctor`."#;
+
+const EXPORT_AFTER_HELP: &str = r#"Behavior and Side Effects:
+  Writes a filtered point-in-time artifact outside the managed Markdown mirror.
+  Markdown output is a combined human-readable snapshot; JSON is one document
+  with an entries array; NDJSON writes one entry per line. Export reads SQLite
+  and never changes entries, mirrors, revisions, indexes, or sync baselines.
+
+Examples:
+  belay export markdown --output ./artifacts/belay-export.md
+  belay export json --type decision --status accepted --output ./artifacts/decisions.json
+  belay export ndjson --tag release --output ./artifacts/release.ndjson
+
+Exit Status:
+  0  Export written
+  2  Invalid invocation
+  3  Repository not initialized
+  4  Filter, display ID, or destination validation error
+  6  Filesystem or SQLite failure
+
+Related Commands:
+  `belay search`, `belay show`, and `belay rebuild`."#;
+
+const DOCTOR_AFTER_HELP: &str = r#"Behavior and Side Effects:
+  Performs read-only checks for configuration, current SQLite schema, FTS5/BM25,
+  managed Markdown validity, duplicate IDs, path rules, sync drift, orphaned
+  temporary files, and generated or active agent integration.
+
+Examples:
+  belay doctor
+
+Exit Status:
+  0  Checks passed
+  2  Invalid invocation
+  3  Repository not initialized
+  4  Validation failure
+  5  Drift requiring explicit resolution
+  6  Filesystem, SQLite, or runtime capability failure
+
+Related Commands:
+  `belay init`, `belay sync`, and `belay rebuild`."#;
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "belay",
+    version,
+    about = "Local-first trace and context harness",
+    long_about = TOP_LEVEL_ABOUT,
+    after_help = TOP_LEVEL_AFTER_HELP
+)]
+pub struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    #[command(
+        about = "Initialize belay-trace in the current repository",
+        after_help = INIT_AFTER_HELP
+    )]
+    Init(InitArgs),
+
+    #[command(
+        about = "Create a trace entry",
+        after_help = ADD_AFTER_HELP
+    )]
+    Add(AddArgs),
+
+    #[command(
+        about = "Link two trace entries",
+        after_help = LINK_AFTER_HELP
+    )]
+    Link(LinkArgs),
+
+    #[command(
+        about = "Transition an entry status",
+        after_help = STATUS_AFTER_HELP
+    )]
+    Status(StatusArgs),
+
+    #[command(
+        about = "Display a trace entry",
+        after_help = SHOW_AFTER_HELP
+    )]
+    Show(EntryIdArgs),
+
+    #[command(
+        about = "Search trace entries",
+        after_help = SEARCH_AFTER_HELP
+    )]
+    Search(SearchArgs),
+
+    #[command(
+        about = "Generate bounded task context",
+        after_help = CONTEXT_AFTER_HELP
+    )]
+    Context(ContextArgs),
+
+    #[command(
+        about = "Reconcile SQLite and managed Markdown",
+        after_help = SYNC_AFTER_HELP
+    )]
+    Sync(SyncArgs),
+
+    #[command(
+        about = "Rebuild SQLite from managed Markdown",
+        after_help = REBUILD_AFTER_HELP
+    )]
+    Rebuild,
+
+    #[command(
+        about = "Write a filtered external snapshot",
+        after_help = EXPORT_AFTER_HELP
+    )]
+    Export(ExportArgs),
+
+    #[command(
+        about = "Check repository and agent integration health",
+        after_help = DOCTOR_AFTER_HELP
+    )]
+    Doctor,
+}
+
+#[derive(Debug, Args)]
+struct InitArgs {
+    /// Add or refresh the marker-managed belay-trace section in repository AGENTS.md.
+    #[arg(long)]
+    update_agents: bool,
+
+    /// Install a generated agent skill into an explicit repository-scoped target.
+    #[arg(long, value_enum, value_name = "TARGET")]
+    install_skill: Option<SkillTarget>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum SkillTarget {
+    Codex,
+}
+
+#[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("body_source")
+        .required(true)
+        .multiple(false)
+        .args(["body", "body_file", "stdin"])
+))]
+struct AddArgs {
+    /// Entry type: plan, decision, work, review, or note.
+    entry_type: String,
+
+    /// Human-readable entry title.
+    #[arg(long)]
+    title: String,
+
+    /// Inline Markdown body.
+    #[arg(long, conflicts_with_all = ["body_file", "stdin"])]
+    body: Option<String>,
+
+    /// Read the Markdown body from this path.
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["body", "stdin"])]
+    body_file: Option<PathBuf>,
+
+    /// Read the Markdown body from standard input.
+    #[arg(long, conflicts_with_all = ["body", "body_file"])]
+    stdin: bool,
+}
+
+#[derive(Debug, Args)]
+struct LinkArgs {
+    /// Source display ID.
+    from: String,
+
+    /// Target display ID.
+    to: String,
+
+    /// Directional relation, such as implements or references.
+    #[arg(long)]
+    relation: String,
+}
+
+#[derive(Debug, Args)]
+struct StatusArgs {
+    /// Entry display ID.
+    id: String,
+
+    /// New type-specific status.
+    status: String,
+}
+
+#[derive(Debug, Args)]
+struct EntryIdArgs {
+    /// Entry display ID.
+    id: String,
+}
+
+#[derive(Debug, Args)]
+struct SearchArgs {
+    /// Plain-text keyword query or exact display ID.
+    query: Option<String>,
+
+    /// Filter by entry type.
+    #[arg(long = "type", value_name = "TYPE")]
+    entry_type: Option<String>,
+
+    /// Filter by type-specific status.
+    #[arg(long)]
+    status: Option<String>,
+
+    /// Filter by an exact tag.
+    #[arg(long)]
+    tag: Option<String>,
+
+    /// Resolve or filter by an exact display ID.
+    #[arg(long, conflicts_with = "query")]
+    id: Option<String>,
+
+    /// Maximum number of deduplicated entries to return.
+    #[arg(long, default_value_t = 20)]
+    limit: usize,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliContextFormat {
+    Human,
+    Agent,
+}
+
+#[derive(Debug, Args)]
+struct ContextArgs {
+    /// Task to retrieve context for.
+    task: String,
+
+    /// Output format for a human or an AI agent.
+    #[arg(long, value_enum, default_value_t = CliContextFormat::Human)]
+    format: CliContextFormat,
+
+    /// Approximate output token budget.
+    #[arg(long, default_value_t = 2500)]
+    budget: usize,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum SyncPreference {
+    Markdown,
+    Sqlite,
+}
+
+#[derive(Debug, Args)]
+struct SyncArgs {
+    /// Explicitly keep one side of an entry-scoped conflict.
+    #[arg(long, value_enum, requires = "id")]
+    prefer: Option<SyncPreference>,
+
+    /// Optional display ID to synchronize or resolve.
+    id: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct ExportArgs {
+    /// Output format: markdown, json, or ndjson.
+    #[arg(value_enum)]
+    format: CliExportFormat,
+
+    /// Destination path for the external snapshot.
+    #[arg(long, value_name = "PATH")]
+    output: PathBuf,
+
+    /// Filter by entry type.
+    #[arg(long = "type", value_name = "TYPE")]
+    entry_type: Option<String>,
+
+    /// Filter by type-specific status.
+    #[arg(long)]
+    status: Option<String>,
+
+    /// Filter by an exact tag.
+    #[arg(long)]
+    tag: Option<String>,
+
+    /// Filter by an exact display ID.
+    #[arg(long)]
+    id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliExportFormat {
+    Markdown,
+    Json,
+    Ndjson,
+}
+
+pub fn run() -> Result<(), BelayError> {
+    let cli = Cli::parse();
+    let current_dir = env::current_dir()
+        .map_err(|source| BelayError::io("read current directory", ".", source))?;
+    execute(cli, &current_dir)
+}
+
+pub fn try_parse_from<I, T>(arguments: I) -> Result<Cli, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    Cli::try_parse_from(arguments)
+}
+
+fn execute(cli: Cli, current_dir: &Path) -> Result<(), BelayError> {
+    match cli.command {
+        Command::Init(arguments) => {
+            let outcome = repository::initialize(current_dir)?;
+            if outcome.already_initialized {
+                println!(
+                    "belay-trace is initialized at {}",
+                    outcome.repository.root.display()
+                );
+            } else {
+                println!(
+                    "Initialized belay-trace at {}",
+                    outcome.repository.root.display()
+                );
+            }
+            if arguments.update_agents {
+                let activation = agent::update_agents(&outcome.repository)?;
+                println!(
+                    "AGENTS.md integration {}: {}",
+                    activation.status.as_str(),
+                    activation.path.display()
+                );
+            }
+            if let Some(SkillTarget::Codex) = arguments.install_skill {
+                let activation = agent::install_codex_skill(&outcome.repository)?;
+                println!(
+                    "Codex skill {}: {}",
+                    activation.status.as_str(),
+                    activation.path.display()
+                );
+            }
+            Ok(())
+        }
+        Command::Add(arguments) => {
+            let repository = repository::discover(current_dir)?;
+            let entry_type = EntryType::from_str(&arguments.entry_type)?;
+            let body = read_body(&arguments)?;
+            let entry = store::create(&repository, entry_type, arguments.title, body)?;
+            println!("Created {}", entry.display_id);
+            Ok(())
+        }
+        Command::Link(arguments) => {
+            let repository = repository::discover(current_dir)?;
+            let relation = LinkRelation::from_str(&arguments.relation)?;
+            let outcome = store::link(&repository, &arguments.from, &arguments.to, relation)?;
+            match outcome {
+                MutationOutcome::Changed => {
+                    println!("Linked {} {} {}", arguments.from, relation, arguments.to)
+                }
+                MutationOutcome::Unchanged => println!(
+                    "Link already exists: {} {} {}",
+                    arguments.from, relation, arguments.to
+                ),
+            }
+            Ok(())
+        }
+        Command::Status(arguments) => {
+            let repository = repository::discover(current_dir)?;
+            let status = EntryStatus::from_str(&arguments.status)?;
+            let outcome = store::set_status(&repository, &arguments.id, status)?;
+            match outcome {
+                MutationOutcome::Changed => {
+                    println!("Updated {} status to {}", arguments.id, status)
+                }
+                MutationOutcome::Unchanged => {
+                    println!("{} already has status {}", arguments.id, status)
+                }
+            }
+            Ok(())
+        }
+        Command::Show(arguments) => {
+            let repository = repository::discover(current_dir)?;
+            let shown = store::show(&repository, &arguments.id)?;
+            print_shown_entry(&shown);
+            Ok(())
+        }
+        Command::Search(arguments) => {
+            let repository = repository::discover(current_dir)?;
+            let entry_type = arguments
+                .entry_type
+                .as_deref()
+                .map(EntryType::from_str)
+                .transpose()?;
+            let status = arguments
+                .status
+                .as_deref()
+                .map(EntryStatus::from_str)
+                .transpose()?;
+            let request = SearchRequest {
+                query: arguments.query.unwrap_or_default(),
+                entry_type,
+                status,
+                tag: arguments.tag,
+                display_id: arguments.id,
+                limit: arguments.limit,
+            };
+            let results = search::search(&repository, &request)?;
+            print_search_results(&request, &results);
+            Ok(())
+        }
+        Command::Context(arguments) => {
+            let repository = repository::discover(current_dir)?;
+            let format = match arguments.format {
+                CliContextFormat::Human => context::ContextFormat::Human,
+                CliContextFormat::Agent => context::ContextFormat::Agent,
+            };
+            let bundle = context::generate(&repository, &arguments.task, format, arguments.budget)?;
+            print!("{}", bundle.text);
+            Ok(())
+        }
+        Command::Sync(arguments) => {
+            let repository = repository::discover(current_dir)?;
+            let preference = arguments.prefer.map(|preference| match preference {
+                SyncPreference::Markdown => reconcile::SyncPreference::Markdown,
+                SyncPreference::Sqlite => reconcile::SyncPreference::Sqlite,
+            });
+            let report = reconcile::synchronize(&repository, arguments.id.as_deref(), preference)?;
+            for outcome in &report.outcomes {
+                println!("{}: {}", outcome.display_id, outcome.action);
+            }
+            for failure in &report.failures {
+                eprintln!("{}: {}", failure.subject, failure.message);
+            }
+            if report.failures.is_empty() {
+                println!("Sync completed: {} entries", report.outcomes.len());
+                Ok(())
+            } else if report.failures.iter().any(|failure| failure.exit_code == 6) {
+                Err(BelayError::StorageSummary {
+                    message: format!(
+                        "sync completed with {} failure(s), including a storage failure",
+                        report.failures.len()
+                    ),
+                })
+            } else if report.failures.iter().any(|failure| failure.exit_code == 4) {
+                Err(BelayError::Validation {
+                    message: format!(
+                        "sync completed with {} validation failure(s)",
+                        report.failures.len()
+                    ),
+                })
+            } else {
+                Err(BelayError::Conflict {
+                    message: format!(
+                        "sync completed with {} conflict or drift failure(s)",
+                        report.failures.len()
+                    ),
+                })
+            }
+        }
+        Command::Rebuild => {
+            let repository = repository::discover(current_dir)?;
+            let count = reconcile::rebuild(&repository)?;
+            println!("Rebuilt SQLite from {count} managed Markdown entries");
+            Ok(())
+        }
+        Command::Export(arguments) => {
+            let repository = repository::discover(current_dir)?;
+            let format = match arguments.format {
+                CliExportFormat::Markdown => export::ExportFormat::Markdown,
+                CliExportFormat::Json => export::ExportFormat::Json,
+                CliExportFormat::Ndjson => export::ExportFormat::Ndjson,
+            };
+            let filter = export::ExportFilter {
+                entry_type: arguments
+                    .entry_type
+                    .as_deref()
+                    .map(EntryType::from_str)
+                    .transpose()?,
+                status: arguments
+                    .status
+                    .as_deref()
+                    .map(EntryStatus::from_str)
+                    .transpose()?,
+                tag: arguments.tag,
+                display_id: arguments.id,
+            };
+            let count = export::write(&repository, format, &arguments.output, &filter)?;
+            println!(
+                "Exported {count} entries to {}",
+                if arguments.output.is_absolute() {
+                    arguments.output
+                } else {
+                    repository.root.join(arguments.output)
+                }
+                .display()
+            );
+            Ok(())
+        }
+        Command::Doctor => {
+            let repository = repository::discover(current_dir)?;
+            let report = reconcile::doctor(&repository);
+            println!("Repository health");
+            for check in &report.checks {
+                println!("{}: {} ({})", check.name, check.status, check.detail);
+            }
+            if report.has_invalid {
+                Err(BelayError::Validation {
+                    message: "repository health checks found invalid state; repair the marker pair or resolve the other reported validation errors before continuing"
+                        .to_owned(),
+                })
+            } else if report.has_drift {
+                Err(BelayError::Conflict {
+                    message: "repository health checks found drift; run `belay sync`, `belay rebuild`, `belay init`, or the reported explicit integration command"
+                        .to_owned(),
+                })
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
+fn print_search_results(request: &SearchRequest, results: &[search::SearchResult]) {
+    println!("Search results");
+    if !request.query.trim().is_empty() {
+        println!("Query: {}", request.query.trim());
+    }
+    if let Some(display_id) = &request.display_id {
+        println!("Display ID: {display_id}");
+    }
+    if let Some(entry_type) = request.entry_type {
+        println!("Type: {entry_type}");
+    }
+    if let Some(status) = request.status {
+        println!("Status: {status}");
+    }
+    if let Some(tag) = &request.tag {
+        println!("Tag: {tag}");
+    }
+    println!("Matches: {}", results.len());
+    for (index, result) in results.iter().enumerate() {
+        println!();
+        println!(
+            "{}. {} [{} / {}]",
+            index + 1,
+            result.display_id,
+            result.entry_type,
+            result.status
+        );
+        println!("   Title: {}", result.title);
+        if let Some(score) = result.score {
+            println!("   BM25 score: {score:.6}");
+        }
+        println!("   Why: {}", result.reason);
+        println!("   Section: {}", result.section);
+        println!("   Excerpt: {}", result.excerpt);
+        println!("   Matching chunks: {}", result.match_count);
+        println!("   Source: {}", result.source_path);
+        println!("   Next: belay show {}", result.display_id);
+    }
+}
+
+fn read_body(arguments: &AddArgs) -> Result<String, BelayError> {
+    if let Some(body) = &arguments.body {
+        return Ok(body.clone());
+    }
+    if let Some(path) = &arguments.body_file {
+        return fs::read_to_string(path)
+            .map_err(|source| BelayError::io("read body file", path, source));
+    }
+    let mut body = String::new();
+    io::stdin()
+        .read_to_string(&mut body)
+        .map_err(|source| BelayError::io("read standard input", "stdin", source))?;
+    Ok(body)
+}
+
+fn print_shown_entry(shown: &store::ShownEntry) {
+    let entry = &shown.entry;
+    println!("ID: {}", entry.display_id);
+    println!("Type: {}", entry.entry_type);
+    println!("Title: {}", entry.title);
+    println!("Status: {}", entry.status);
+    println!("Created: {}", entry.created_at);
+    println!("Updated: {}", entry.updated_at);
+    println!("Revision: {}", entry.revision);
+    println!("Source: {}", shown.source_path);
+    if entry.tags.is_empty() {
+        println!("Tags: none");
+    } else {
+        println!("Tags: {}", entry.tags.join(", "));
+    }
+    let metadata = serde_json::to_string(&entry.metadata).unwrap_or_else(|_| "{}".to_owned());
+    println!("Metadata: {metadata}");
+    println!("Outbound Links:");
+    if entry.links.is_empty() {
+        println!("  none");
+    } else {
+        for link in &entry.links {
+            println!("  - {} {}", link.relation, link.id);
+        }
+    }
+    println!("Inbound Links:");
+    if shown.inbound_links.is_empty() {
+        println!("  none");
+    } else {
+        for link in &shown.inbound_links {
+            println!("  - {} {}", link.id, link.relation);
+        }
+    }
+    println!("Body:");
+    println!("{}", entry.body);
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::error::ErrorKind;
+
+    use super::*;
+
+    #[test]
+    fn invalid_invocation_uses_clap_usage_exit_category() {
+        let error = try_parse_from(["belay", "add", "decision"]).expect_err("title is required");
+        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+        assert_eq!(error.exit_code(), 2);
+    }
+
+    #[test]
+    fn add_requires_exactly_one_body_source() {
+        let missing = try_parse_from(["belay", "add", "decision", "--title", "SQLite"])
+            .expect_err("body source is required");
+        assert_eq!(missing.kind(), ErrorKind::MissingRequiredArgument);
+
+        let duplicate = try_parse_from([
+            "belay", "add", "decision", "--title", "SQLite", "--body", "inline", "--stdin",
+        ])
+        .expect_err("body sources conflict");
+        assert_eq!(duplicate.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn sync_id_and_preference_are_coupled() {
+        try_parse_from(["belay", "sync", "DEC-20260606T115000-001-sqlite"])
+            .expect("ID without preference is a targeted sync");
+
+        let preference_without_id = try_parse_from(["belay", "sync", "--prefer", "sqlite"])
+            .expect_err("--prefer requires an ID");
+        assert_eq!(
+            preference_without_id.kind(),
+            ErrorKind::MissingRequiredArgument
+        );
+    }
+}

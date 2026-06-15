@@ -1,0 +1,44 @@
+name: Task
+description: Track planned work with clear completion criteria.
+title: "task: "
+labels:
+  - feature
+body:
+  - type: textarea
+    id: background
+    attributes:
+      label: 背景
+      description: なぜこの作業が必要かを書いてください。
+    validations:
+      required: true
+  - type: textarea
+    id: objective
+    attributes:
+      label: 目的
+      description: この作業で達成したい状態を書いてください。
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: 完了条件
+      description: 完了とみなす条件を箇条書きで書いてください。
+      placeholder: |
+        - ...
+        - ...
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: 制約
+      description: スコープ、互換性、期限などの制約があれば書いてください。
+    validations:
+      required: false
+  - type: textarea
+    id: references
+    attributes:
+      label: 関連資料
+      description: 仕様書、既存PR、外部資料など。
+    validations:
+      required: false

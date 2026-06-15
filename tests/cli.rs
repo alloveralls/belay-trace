@@ -1,0 +1,2872 @@
+use std::collections::BTreeMap;
+use std::fs;
+use std::io::Write;
+use std::process::{Command, Stdio};
+
+use rusqlite::Connection;
+use tempfile::tempdir;
+
+use belay_trace::entry::{Entry, EntryLink, EntryStatus, EntryType, LinkRelation};
+use belay_trace::markdown::{self, estimate_tokens};
+
+fn belay() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_belay"))
+}
+
+#[test]
+fn top_level_help_describes_commands_workflow_and_exit_categories() {
+    let output = belay().arg("--help").output().expect("run belay --help");
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("help is UTF-8");
+
+    for expected in [
+        "Usage:",
+        "Commands:",
+        "Behavior and Side Effects:",
+        "Examples:",
+        "Exit Status:",
+        "Related Commands:",
+        "Workflow groups:",
+        "init",
+        "add",
+        "link",
+        "status",
+        "sync",
+        "search",
+        "context",
+        "doctor",
+        "rebuild",
+        "export",
+    ] {
+        assert!(stdout.contains(expected), "missing help text: {expected}");
+    }
+}
+
+#[test]
+fn every_command_help_has_the_required_structure() {
+    for command in [
+        "init", "add", "link", "status", "show", "search", "context", "sync", "rebuild", "export",
+        "doctor",
+    ] {
+        let output = belay()
+            .args([command, "--help"])
+            .output()
+            .unwrap_or_else(|error| panic!("run help for {command}: {error}"));
+        assert!(output.status.success(), "help failed for {command}");
+        let stdout = String::from_utf8(output.stdout).expect("help is UTF-8");
+        for expected in [
+            "Usage:",
+            "Behavior and Side Effects:",
+            "Examples:",
+            "Exit Status:",
+            "Related Commands:",
+        ] {
+            assert!(
+                stdout.contains(expected),
+                "{command} help is missing {expected}"
+            );
+        }
+        assert!(
+            stdout.contains("Arguments:") || stdout.contains("Options:"),
+            "{command} help is missing Arguments or Options"
+        );
+    }
+}
+
+#[test]
+fn state_changing_command_help_has_realistic_examples_and_exit_categories() {
+    for command in ["init", "add", "link", "status", "sync", "rebuild", "export"] {
+        let output = belay()
+            .args([command, "--help"])
+            .output()
+            .unwrap_or_else(|error| panic!("run help for {command}: {error}"));
+        assert!(output.status.success(), "help failed for {command}");
+        let stdout = String::from_utf8(output.stdout).expect("help is UTF-8");
+        assert!(
+            stdout.contains(&format!("belay {command}")),
+            "{command} help lacks a realistic command example"
+        );
+        for exit_code in ["0 ", "2 ", "3 ", "4 ", "6 "] {
+            assert!(
+                stdout.contains(exit_code),
+                "{command} help is missing exit category {exit_code:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn init_is_idempotent_and_does_not_modify_agents_md() {
+    let temporary = tempdir().expect("create temp directory");
+    fs::create_dir(temporary.path().join(".git")).expect("create repository marker");
+    fs::write(temporary.path().join("AGENTS.md"), "keep me\n").expect("write AGENTS.md");
+
+    let first = belay()
+        .arg("init")
+        .current_dir(temporary.path())
+        .output()
+        .expect("run first init");
+    assert!(first.status.success(), "{:?}", first);
+
+    let second = belay()
+        .arg("init")
+        .current_dir(temporary.path())
+        .output()
+        .expect("run second init");
+    assert!(second.status.success(), "{:?}", second);
+    assert_eq!(
+        fs::read_to_string(temporary.path().join("AGENTS.md")).expect("read AGENTS.md"),
+        "keep me\n"
+    );
+    assert!(!temporary.path().join(".agents").exists());
+    let snippet = fs::read_to_string(temporary.path().join(".belay/agent/AGENTS.md.snippet"))
+        .expect("read generated snippet");
+    let skill = fs::read_to_string(temporary.path().join(".belay/agent/codex/SKILL.md"))
+        .expect("read generated skill");
+    assert!(snippet.contains("Never overwrite an unresolved sync conflict"));
+    assert!(skill.contains("Repository-specific policy belongs"));
+}
+
+#[test]
+fn repeated_init_refreshes_generated_assets_without_activating_them() {
+    let temporary = initialize_repository();
+    let snippet_path = temporary.path().join(".belay/agent/AGENTS.md.snippet");
+    let skill_path = temporary.path().join(".belay/agent/codex/SKILL.md");
+    let expected_snippet = fs::read_to_string(&snippet_path).expect("read generated snippet");
+    let expected_skill = fs::read_to_string(&skill_path).expect("read generated skill");
+    fs::write(&snippet_path, "stale snippet\n").expect("stale generated snippet");
+    fs::write(&skill_path, "stale skill\n").expect("stale generated skill");
+
+    let refreshed = belay()
+        .arg("init")
+        .current_dir(temporary.path())
+        .output()
+        .expect("refresh generated assets");
+    assert!(refreshed.status.success(), "{refreshed:?}");
+    assert_eq!(
+        fs::read_to_string(snippet_path).expect("read refreshed snippet"),
+        expected_snippet
+    );
+    assert_eq!(
+        fs::read_to_string(skill_path).expect("read refreshed skill"),
+        expected_skill
+    );
+    assert!(!temporary.path().join("AGENTS.md").exists());
+    assert!(!temporary.path().join(".agents").exists());
+}
+
+#[test]
+fn update_agents_appends_replaces_and_stabilizes_only_the_managed_section() {
+    let temporary = tempdir().expect("create temp directory");
+    fs::create_dir(temporary.path().join(".git")).expect("create repository marker");
+    fs::write(
+        temporary.path().join("AGENTS.md"),
+        "# Existing policy\n\nKeep this line.\n",
+    )
+    .expect("write AGENTS.md");
+
+    let first = belay()
+        .args(["init", "--update-agents"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("activate AGENTS integration");
+    assert!(first.status.success(), "{first:?}");
+    let activated =
+        fs::read_to_string(temporary.path().join("AGENTS.md")).expect("read activated AGENTS.md");
+    assert!(activated.starts_with("# Existing policy\n\nKeep this line.\n\n"));
+    assert_eq!(activated.matches("<!-- belay-trace:start -->").count(), 1);
+    assert_eq!(activated.matches("<!-- belay-trace:end -->").count(), 1);
+
+    let stale = activated.replace(
+        "Run `belay context",
+        "This stale block says to run `belay context",
+    );
+    fs::write(temporary.path().join("AGENTS.md"), stale).expect("make managed section stale");
+    let refreshed = belay()
+        .args(["init", "--update-agents"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("refresh AGENTS integration");
+    assert!(refreshed.status.success(), "{refreshed:?}");
+    let refreshed =
+        fs::read_to_string(temporary.path().join("AGENTS.md")).expect("read refreshed AGENTS.md");
+    assert!(refreshed.starts_with("# Existing policy\n\nKeep this line.\n\n"));
+    assert!(!refreshed.contains("This stale block"));
+
+    let repeated = belay()
+        .args(["init", "--update-agents"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("repeat AGENTS integration");
+    assert!(repeated.status.success(), "{repeated:?}");
+    assert_eq!(
+        fs::read_to_string(temporary.path().join("AGENTS.md")).expect("read stable AGENTS.md"),
+        refreshed
+    );
+    assert!(
+        String::from_utf8(repeated.stdout)
+            .expect("stdout is UTF-8")
+            .contains("AGENTS.md integration unchanged")
+    );
+}
+
+#[test]
+fn update_agents_creates_missing_file_and_rejects_malformed_markers() {
+    let temporary = tempdir().expect("create temp directory");
+    fs::create_dir(temporary.path().join(".git")).expect("create repository marker");
+
+    let created = belay()
+        .args(["init", "--update-agents"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("create AGENTS.md");
+    assert!(created.status.success(), "{created:?}");
+    assert!(temporary.path().join("AGENTS.md").is_file());
+
+    fs::write(
+        temporary.path().join("AGENTS.md"),
+        "keep\n<!-- belay-trace:start -->\nmalformed\n",
+    )
+    .expect("write malformed markers");
+    let before =
+        fs::read_to_string(temporary.path().join("AGENTS.md")).expect("read malformed AGENTS.md");
+    let rejected = belay()
+        .args(["init", "--update-agents"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("reject malformed markers");
+    assert_eq!(rejected.status.code(), Some(4));
+    assert_eq!(
+        fs::read_to_string(temporary.path().join("AGENTS.md"))
+            .expect("read unchanged malformed AGENTS.md"),
+        before
+    );
+}
+
+#[test]
+fn install_codex_skill_is_explicit_repository_scoped_and_idempotent() {
+    let temporary = tempdir().expect("create temp directory");
+    fs::create_dir(temporary.path().join(".git")).expect("create repository marker");
+
+    let installed = belay()
+        .args(["init", "--install-skill", "codex"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("install Codex skill");
+    assert!(installed.status.success(), "{installed:?}");
+    let path = temporary.path().join(".agents/skills/belay-trace/SKILL.md");
+    let generated = fs::read_to_string(temporary.path().join(".belay/agent/codex/SKILL.md"))
+        .expect("read generated skill");
+    assert_eq!(
+        fs::read_to_string(&path).expect("read installed skill"),
+        generated
+    );
+
+    let repeated = belay()
+        .args(["init", "--install-skill", "codex"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("repeat Codex skill install");
+    assert!(repeated.status.success(), "{repeated:?}");
+    assert!(
+        String::from_utf8(repeated.stdout)
+            .expect("stdout is UTF-8")
+            .contains("Codex skill unchanged")
+    );
+}
+
+#[test]
+fn doctor_reports_generated_active_inactive_stale_and_missing_agent_states() {
+    let temporary = initialize_repository();
+
+    let inactive = belay()
+        .arg("doctor")
+        .current_dir(temporary.path())
+        .output()
+        .expect("doctor inactive integration");
+    assert!(inactive.status.success(), "{inactive:?}");
+    let stdout = String::from_utf8(inactive.stdout).expect("stdout is UTF-8");
+    assert!(stdout.contains("generated AGENTS snippet: present"));
+    assert!(stdout.contains("AGENTS.md integration: inactive"));
+    assert!(stdout.contains("generated Codex skill: present"));
+    assert!(stdout.contains("installed Codex skill: inactive"));
+
+    let activated = belay()
+        .args(["init", "--update-agents", "--install-skill", "codex"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("activate integrations");
+    assert!(activated.status.success(), "{activated:?}");
+    let active = belay()
+        .arg("doctor")
+        .current_dir(temporary.path())
+        .output()
+        .expect("doctor active integration");
+    assert!(active.status.success(), "{active:?}");
+    let stdout = String::from_utf8(active.stdout).expect("stdout is UTF-8");
+    assert!(stdout.contains("AGENTS.md integration: active"));
+    assert!(stdout.contains("installed Codex skill: active"));
+
+    fs::write(
+        temporary.path().join(".agents/skills/belay-trace/SKILL.md"),
+        "stale\n",
+    )
+    .expect("stale installed skill");
+    fs::remove_file(temporary.path().join(".belay/agent/AGENTS.md.snippet"))
+        .expect("remove generated snippet");
+    let unhealthy = belay()
+        .arg("doctor")
+        .current_dir(temporary.path())
+        .output()
+        .expect("doctor unhealthy integration");
+    assert_eq!(unhealthy.status.code(), Some(5));
+    let stdout = String::from_utf8(unhealthy.stdout).expect("stdout is UTF-8");
+    assert!(stdout.contains("generated AGENTS snippet: missing"));
+    assert!(stdout.contains("installed Codex skill: stale"));
+    let stderr = String::from_utf8(unhealthy.stderr).expect("stderr is UTF-8");
+    assert!(stderr.contains("belay init"));
+}
+
+#[test]
+fn doctor_classifies_generated_and_agents_drift_and_malformed_markers() {
+    let temporary = initialize_repository();
+    let generated_skill = temporary.path().join(".belay/agent/codex/SKILL.md");
+
+    fs::write(&generated_skill, "stale generated skill\n").expect("stale generated skill");
+    let stale_generated = belay()
+        .arg("doctor")
+        .current_dir(temporary.path())
+        .output()
+        .expect("doctor stale generated skill");
+    assert_eq!(stale_generated.status.code(), Some(5));
+    assert!(
+        String::from_utf8(stale_generated.stdout)
+            .expect("stdout is UTF-8")
+            .contains("generated Codex skill: stale")
+    );
+
+    let repaired = belay()
+        .arg("init")
+        .current_dir(temporary.path())
+        .output()
+        .expect("repair generated skill");
+    assert!(repaired.status.success(), "{repaired:?}");
+
+    let activated = belay()
+        .args(["init", "--update-agents"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("activate AGENTS integration");
+    assert!(activated.status.success(), "{activated:?}");
+    let agents_path = temporary.path().join("AGENTS.md");
+    let stale_agents = fs::read_to_string(&agents_path)
+        .expect("read AGENTS.md")
+        .replace("Run `belay context", "Run stale `belay context");
+    fs::write(&agents_path, stale_agents).expect("stale AGENTS integration");
+    let stale = belay()
+        .arg("doctor")
+        .current_dir(temporary.path())
+        .output()
+        .expect("doctor stale AGENTS integration");
+    assert_eq!(stale.status.code(), Some(5));
+    assert!(
+        String::from_utf8(stale.stdout)
+            .expect("stdout is UTF-8")
+            .contains("AGENTS.md integration: stale")
+    );
+
+    fs::write(
+        &agents_path,
+        "keep\n<!-- belay-trace:start -->\nmalformed\n",
+    )
+    .expect("write malformed AGENTS markers");
+    let malformed = belay()
+        .arg("doctor")
+        .current_dir(temporary.path())
+        .output()
+        .expect("doctor malformed AGENTS integration");
+    assert_eq!(malformed.status.code(), Some(4));
+    assert!(
+        String::from_utf8(malformed.stdout)
+            .expect("stdout is UTF-8")
+            .contains("AGENTS.md integration: malformed")
+    );
+    assert!(
+        String::from_utf8(malformed.stderr)
+            .expect("stderr is UTF-8")
+            .contains("repair the marker pair")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_integration_rejects_symlinks_and_non_regular_files() {
+    use std::os::unix::fs::symlink;
+
+    let temporary = initialize_repository();
+    let external = temporary.path().join("external-agents.md");
+    fs::write(&external, "external\n").expect("write external file");
+    symlink(&external, temporary.path().join("AGENTS.md")).expect("symlink AGENTS.md");
+
+    let update = belay()
+        .args(["init", "--update-agents"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("reject symlinked AGENTS.md");
+    assert_eq!(update.status.code(), Some(4));
+    assert_eq!(
+        fs::read_to_string(&external).expect("read untouched external file"),
+        "external\n"
+    );
+
+    fs::remove_file(temporary.path().join("AGENTS.md")).expect("remove AGENTS symlink");
+    fs::create_dir(temporary.path().join("AGENTS.md")).expect("create non-regular AGENTS path");
+    let doctor = belay()
+        .arg("doctor")
+        .current_dir(temporary.path())
+        .output()
+        .expect("reject non-regular AGENTS.md");
+    assert_eq!(doctor.status.code(), Some(4));
+
+    fs::remove_dir(temporary.path().join("AGENTS.md")).expect("remove AGENTS directory");
+    let external_directory = temporary.path().join("external-skill-directory");
+    fs::create_dir(&external_directory).expect("create external directory");
+    symlink(&external_directory, temporary.path().join(".agents"))
+        .expect("symlink skill directory");
+    let install = belay()
+        .args(["init", "--install-skill", "codex"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("reject symlinked skill directory");
+    assert_eq!(install.status.code(), Some(4));
+    assert!(
+        fs::read_dir(&external_directory)
+            .expect("read untouched external directory")
+            .next()
+            .is_none()
+    );
+}
+
+#[test]
+fn uninitialized_project_command_fails_without_mutation_and_suggests_init() {
+    let temporary = tempdir().expect("create temp directory");
+    fs::create_dir(temporary.path().join(".git")).expect("create repository marker");
+
+    let output = belay()
+        .arg("doctor")
+        .current_dir(temporary.path())
+        .output()
+        .expect("run doctor");
+
+    assert_eq!(output.status.code(), Some(3));
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(stderr.contains(&temporary.path().display().to_string()));
+    assert!(stderr.contains("belay init"));
+    assert!(!temporary.path().join(".belay").exists());
+}
+
+#[test]
+fn project_command_does_not_recreate_a_missing_database() {
+    let temporary = initialize_repository();
+    let database_path = temporary.path().join(".belay/state/belay.sqlite");
+    fs::remove_file(&database_path).expect("remove database");
+
+    let output = belay()
+        .args(["search", "sqlite"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("search without database");
+
+    assert_eq!(output.status.code(), Some(6));
+    assert!(!database_path.exists());
+}
+
+#[test]
+fn invalid_config_uses_validation_exit_category() {
+    let temporary = tempdir().expect("create temp directory");
+    fs::create_dir(temporary.path().join(".git")).expect("create repository marker");
+    fs::create_dir(temporary.path().join(".belay")).expect("create belay directory");
+    fs::write(
+        temporary.path().join(".belay/config.toml"),
+        "schema_version = 99\n",
+    )
+    .expect("write invalid config");
+
+    let output = belay()
+        .arg("init")
+        .current_dir(temporary.path())
+        .output()
+        .expect("run init");
+
+    assert_eq!(output.status.code(), Some(4));
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(stderr.contains("configuration"));
+    assert!(stderr.contains("invalid"));
+}
+
+#[test]
+fn newer_database_schema_uses_validation_exit_category() {
+    let temporary = tempdir().expect("create temp directory");
+    fs::create_dir(temporary.path().join(".git")).expect("create repository marker");
+
+    let initialized = belay()
+        .arg("init")
+        .current_dir(temporary.path())
+        .output()
+        .expect("run init");
+    assert!(initialized.status.success());
+
+    let database_path = temporary.path().join(".belay/state/belay.sqlite");
+    let connection = Connection::open(database_path).expect("open database");
+    connection
+        .execute(
+            "
+            INSERT INTO schema_migrations(version, name, applied_at)
+            VALUES (99, 'future schema', '2026-06-06T00:00:00Z')
+            ",
+            [],
+        )
+        .expect("insert future migration");
+
+    let output = belay()
+        .arg("init")
+        .current_dir(temporary.path())
+        .output()
+        .expect("run init again");
+
+    assert_eq!(output.status.code(), Some(4));
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(stderr.contains("newer than supported"));
+}
+
+fn initialize_repository() -> tempfile::TempDir {
+    let temporary = tempdir().expect("create temp directory");
+    fs::create_dir(temporary.path().join(".git")).expect("create repository marker");
+    let output = belay()
+        .arg("init")
+        .current_dir(temporary.path())
+        .output()
+        .expect("run init");
+    assert!(output.status.success(), "{output:?}");
+    temporary
+}
+
+fn created_id(output: &std::process::Output) -> String {
+    assert!(output.status.success(), "{output:?}");
+    String::from_utf8(output.stdout.clone())
+        .expect("stdout is UTF-8")
+        .trim()
+        .strip_prefix("Created ")
+        .expect("created output")
+        .to_owned()
+}
+
+fn mirror_path(
+    repository: &std::path::Path,
+    entry_type: &str,
+    display_id: &str,
+) -> std::path::PathBuf {
+    repository
+        .join(".belay/entries")
+        .join(entry_type)
+        .join(format!("{display_id}.md"))
+}
+
+#[test]
+fn add_supports_every_type_and_body_source() {
+    let temporary = initialize_repository();
+    let body_path = temporary.path().join("body.md");
+    fs::write(&body_path, "Body from file\n").expect("write body file");
+
+    for entry_type in ["plan", "decision", "work", "review", "note"] {
+        let inline = belay()
+            .args([
+                "add",
+                entry_type,
+                "--title",
+                &format!("{entry_type} inline"),
+                "--body",
+                "Inline body",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add inline entry");
+        created_id(&inline);
+
+        let file = belay()
+            .args([
+                "add",
+                entry_type,
+                "--title",
+                &format!("{entry_type} file"),
+                "--body-file",
+            ])
+            .arg(&body_path)
+            .current_dir(temporary.path())
+            .output()
+            .expect("add file entry");
+        created_id(&file);
+
+        let mut child = belay()
+            .args([
+                "add",
+                entry_type,
+                "--title",
+                &format!("{entry_type} stdin"),
+                "--stdin",
+            ])
+            .current_dir(temporary.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn stdin entry");
+        child
+            .stdin
+            .take()
+            .expect("stdin pipe")
+            .write_all(b"Body from stdin\n")
+            .expect("write stdin");
+        let stdin = child.wait_with_output().expect("wait for stdin entry");
+        created_id(&stdin);
+    }
+
+    let connection =
+        Connection::open(temporary.path().join(".belay/state/belay.sqlite")).expect("open DB");
+    let entry_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))
+        .expect("count entries");
+    let sync_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM sync_state", [], |row| row.get(0))
+        .expect("count sync states");
+    let fts_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(DISTINCT entry_id) FROM entry_fts",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count FTS entries");
+    let mismatched_baselines: i64 = connection
+        .query_row(
+            "
+            SELECT COUNT(*)
+            FROM sync_state
+            WHERE sqlite_content_hash_at_last_sync != mirror_content_hash_at_last_sync
+            ",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count mismatched sync baselines");
+    assert_eq!(entry_count, 15);
+    assert_eq!(sync_count, 15);
+    assert_eq!(fts_count, 15);
+    assert_eq!(mismatched_baselines, 0);
+}
+
+#[test]
+fn invalid_add_does_not_allocate_or_write() {
+    let temporary = initialize_repository();
+    let invalid = belay()
+        .args(["add", "decision", "--title", " ", "--body", "invalid title"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("run invalid add");
+    assert_eq!(invalid.status.code(), Some(4));
+
+    let valid = belay()
+        .args(["add", "decision", "--title", "Valid", "--body", "body"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("run valid add");
+    let id = created_id(&valid);
+    assert!(id.contains("-001-"));
+
+    let mirror_count = fs::read_dir(temporary.path().join(".belay/entries/decisions"))
+        .expect("read mirrors")
+        .count();
+    assert_eq!(mirror_count, 1);
+}
+
+#[test]
+fn show_link_and_status_use_display_ids_and_keep_mirror_in_sync() {
+    let temporary = initialize_repository();
+    let decision = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Use SQLite",
+                "--body",
+                "Decision body",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add decision"),
+    );
+    let work = created_id(
+        &belay()
+            .args([
+                "add",
+                "work",
+                "--title",
+                "Implement storage",
+                "--body",
+                "Work body",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add work"),
+    );
+
+    let linked = belay()
+        .args(["link", &work, &decision, "--relation", "implements"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("link entries");
+    assert!(linked.status.success(), "{linked:?}");
+    let duplicate = belay()
+        .args(["link", &work, &decision, "--relation", "implements"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("link entries again");
+    assert!(duplicate.status.success());
+    assert!(
+        String::from_utf8(duplicate.stdout)
+            .expect("stdout")
+            .contains("already exists")
+    );
+
+    let status = belay()
+        .args(["status", &decision, "accepted"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("update status");
+    assert!(status.status.success(), "{status:?}");
+    let same_status = belay()
+        .args(["status", &decision, "accepted"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("repeat status");
+    assert!(same_status.status.success());
+    assert!(
+        String::from_utf8(same_status.stdout)
+            .expect("stdout")
+            .contains("already has status")
+    );
+
+    let shown = belay()
+        .args(["show", &decision])
+        .current_dir(temporary.path())
+        .output()
+        .expect("show decision");
+    assert!(shown.status.success(), "{shown:?}");
+    let stdout = String::from_utf8(shown.stdout).expect("stdout");
+    assert!(stdout.contains(&format!("ID: {decision}")));
+    assert!(stdout.contains("Status: accepted"));
+    assert!(stdout.contains("Metadata: {}"));
+    assert!(stdout.contains(&format!("- {work} implements")));
+    assert!(!stdout.contains("entry_id"));
+
+    let connection =
+        Connection::open(temporary.path().join(".belay/state/belay.sqlite")).expect("open DB");
+    let link_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM entry_links", [], |row| row.get(0))
+        .expect("count links");
+    assert_eq!(link_count, 1);
+    let link_id_types: (String, String) = connection
+        .query_row(
+            "
+            SELECT typeof(from_entry_id), typeof(to_entry_id)
+            FROM entry_links
+            ",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read link ID types");
+    assert_eq!(link_id_types, ("integer".to_owned(), "integer".to_owned()));
+    let revision: i64 = connection
+        .query_row(
+            "SELECT revision FROM entries WHERE display_id = ?1",
+            [&decision],
+            |row| row.get(0),
+        )
+        .expect("read decision revision");
+    assert_eq!(revision, 2);
+    let work_revision: i64 = connection
+        .query_row(
+            "SELECT revision FROM entries WHERE display_id = ?1",
+            [&work],
+            |row| row.get(0),
+        )
+        .expect("read work revision");
+    assert_eq!(work_revision, 2);
+
+    let decision_mirror = temporary
+        .path()
+        .join(".belay/entries/decisions")
+        .join(format!("{decision}.md"));
+    let mirror = fs::read_to_string(decision_mirror).expect("read decision mirror");
+    assert!(mirror.contains("status: accepted"));
+    assert!(mirror.contains("revision: 2"));
+    let work_mirror = temporary
+        .path()
+        .join(".belay/entries/work")
+        .join(format!("{work}.md"));
+    let mirror = fs::read_to_string(work_mirror).expect("read work mirror");
+    assert!(mirror.contains(&format!("id: {decision}")));
+    assert!(mirror.contains("relation: implements"));
+}
+
+#[test]
+fn link_and_status_validation_do_not_mutate_entries() {
+    let temporary = initialize_repository();
+    let decision = created_id(
+        &belay()
+            .args(["add", "decision", "--title", "Decision", "--body", "Body"])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add decision"),
+    );
+
+    for output in [
+        belay()
+            .args(["link", &decision, &decision, "--relation", "references"])
+            .current_dir(temporary.path())
+            .output()
+            .expect("self link"),
+        belay()
+            .args(["link", &decision, &decision, "--relation", "unknown"])
+            .current_dir(temporary.path())
+            .output()
+            .expect("unknown relation"),
+        belay()
+            .args([
+                "link",
+                &decision,
+                "NOTE-20260606T120000-001-missing",
+                "--relation",
+                "references",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("missing target"),
+        belay()
+            .args(["status", &decision, "in-progress"])
+            .current_dir(temporary.path())
+            .output()
+            .expect("invalid status"),
+    ] {
+        assert_eq!(output.status.code(), Some(4), "{output:?}");
+    }
+
+    let connection =
+        Connection::open(temporary.path().join(".belay/state/belay.sqlite")).expect("open DB");
+    let revision: i64 = connection
+        .query_row(
+            "SELECT revision FROM entries WHERE display_id = ?1",
+            [&decision],
+            |row| row.get(0),
+        )
+        .expect("read revision");
+    let link_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM entry_links", [], |row| row.get(0))
+        .expect("count links");
+    assert_eq!(revision, 1);
+    assert_eq!(link_count, 0);
+}
+
+#[test]
+fn status_accepts_an_allowed_value_for_every_entry_type() {
+    let temporary = initialize_repository();
+    for (entry_type, status) in [
+        ("plan", "approved"),
+        ("decision", "accepted"),
+        ("work", "completed"),
+        ("review", "completed"),
+        ("note", "archived"),
+    ] {
+        let id = created_id(
+            &belay()
+                .args([
+                    "add",
+                    entry_type,
+                    "--title",
+                    &format!("{entry_type} status"),
+                    "--body",
+                    "Body",
+                ])
+                .current_dir(temporary.path())
+                .output()
+                .expect("add entry"),
+        );
+        let output = belay()
+            .args(["status", &id, status])
+            .current_dir(temporary.path())
+            .output()
+            .expect("update status");
+        assert!(output.status.success(), "{output:?}");
+        let shown = belay()
+            .args(["show", &id])
+            .current_dir(temporary.path())
+            .output()
+            .expect("show entry");
+        assert!(
+            String::from_utf8(shown.stdout)
+                .expect("stdout")
+                .contains(&format!("Status: {status}"))
+        );
+    }
+}
+
+#[test]
+fn search_supports_exact_id_structured_filters_and_bm25_deduplication() {
+    let temporary = initialize_repository();
+    let primary = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "SQLite migration strategy",
+                "--body",
+                "## Storage\n\nsqlite sqlite sqlite migration\n\n## Rollout\n\nmigration validation",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add primary decision"),
+    );
+    let secondary = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "SQLite fallback",
+                "--body",
+                "sqlite fallback",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add secondary decision"),
+    );
+    let unrelated = created_id(
+        &belay()
+            .args([
+                "add",
+                "work",
+                "--title",
+                "Documentation",
+                "--body",
+                "write usage examples",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add unrelated work"),
+    );
+
+    let database_path = temporary.path().join(".belay/state/belay.sqlite");
+    let connection = Connection::open(&database_path).expect("open DB");
+    connection
+        .execute(
+            "
+            INSERT INTO entry_tags(entry_id, tag)
+            SELECT id, 'storage' FROM entries WHERE display_id = ?1
+            ",
+            [&primary],
+        )
+        .expect("tag primary");
+    let query_plan = connection
+        .prepare("EXPLAIN QUERY PLAN SELECT id FROM entries WHERE display_id = ?1")
+        .expect("prepare query plan")
+        .query_map([&primary], |row| row.get::<_, String>(3))
+        .expect("query plan")
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect("collect query plan")
+        .join("\n");
+    assert!(query_plan.contains("idx_entries_display_id"));
+
+    let exact = belay()
+        .args(["search", &primary])
+        .current_dir(temporary.path())
+        .output()
+        .expect("search exact ID");
+    assert!(exact.status.success(), "{exact:?}");
+    let exact_stdout = String::from_utf8(exact.stdout).expect("exact stdout");
+    assert!(exact_stdout.contains("Matches: 1"));
+    assert!(exact_stdout.contains("Why: exact display-ID match"));
+    assert!(!exact_stdout.contains("BM25 score:"));
+
+    let structured = belay()
+        .args([
+            "search", "--type", "decision", "--status", "proposed", "--tag", "storage",
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("structured search");
+    assert!(structured.status.success(), "{structured:?}");
+    let structured_stdout = String::from_utf8(structured.stdout).expect("structured stdout");
+    assert!(structured_stdout.contains("Matches: 1"));
+    assert!(structured_stdout.contains(&primary));
+    assert!(!structured_stdout.contains(&secondary));
+    assert!(!structured_stdout.contains(&unrelated));
+
+    let keyword = belay()
+        .args(["search", "sqlite migration"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("keyword search");
+    assert!(keyword.status.success(), "{keyword:?}");
+    let keyword_stdout = String::from_utf8(keyword.stdout).expect("keyword stdout");
+    assert!(keyword_stdout.contains("BM25 score:"));
+    assert!(keyword_stdout.contains("Matching chunks: 2"));
+    assert!(keyword_stdout.contains("Section: Storage"));
+    assert!(
+        keyword_stdout.find(&primary).expect("primary result")
+            < keyword_stdout.find(&secondary).expect("secondary result")
+    );
+    assert!(!keyword_stdout.contains(&unrelated));
+    assert!(!keyword_stdout.contains("entry_id"));
+}
+
+#[test]
+fn search_automatically_migrates_a_schema_v1_repository() {
+    let temporary = initialize_repository();
+    let decision = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "SQLite upgrade",
+                "--body",
+                "automatic migration",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add decision"),
+    );
+    let database_path = temporary.path().join(".belay/state/belay.sqlite");
+    {
+        let connection = Connection::open(&database_path).expect("open DB");
+        connection
+            .execute_batch(
+                "
+                DROP TABLE entry_fts;
+                CREATE VIRTUAL TABLE entry_fts USING fts5(
+                    entry_id UNINDEXED,
+                    title,
+                    body,
+                    section,
+                    chunk_text,
+                    tokenize = 'unicode61'
+                );
+                INSERT INTO entry_fts(entry_id, title, body, section, chunk_text)
+                SELECT chunks.entry_id, entries.title, entries.body,
+                       chunks.section, chunks.text
+                FROM entry_chunks chunks
+                JOIN entries ON entries.id = chunks.entry_id;
+                DELETE FROM schema_migrations WHERE version = 2;
+                ",
+            )
+            .expect("downgrade to schema v1");
+    }
+
+    let output = belay()
+        .args(["search", "automatic migration"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("search and migrate");
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8(output.stdout)
+            .expect("search stdout")
+            .contains(&decision)
+    );
+
+    let connection = Connection::open(database_path).expect("reopen DB");
+    let version: i64 = connection
+        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+            row.get(0)
+        })
+        .expect("read schema version");
+    let fts_sql: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'entry_fts'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read FTS schema");
+    assert_eq!(version, 2);
+    assert!(fts_sql.contains("chunk_ordinal UNINDEXED"));
+}
+
+#[test]
+fn concurrent_searches_serialize_a_schema_v1_migration() {
+    let temporary = initialize_repository();
+    let decision = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Concurrent SQLite upgrade",
+                "--body",
+                "serialized automatic migration",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add decision"),
+    );
+    let database_path = temporary.path().join(".belay/state/belay.sqlite");
+    {
+        let connection = Connection::open(&database_path).expect("open DB");
+        connection
+            .execute_batch(
+                "
+                DROP TABLE entry_fts;
+                CREATE VIRTUAL TABLE entry_fts USING fts5(
+                    entry_id UNINDEXED,
+                    title,
+                    body,
+                    section,
+                    chunk_text,
+                    tokenize = 'unicode61'
+                );
+                INSERT INTO entry_fts(entry_id, title, body, section, chunk_text)
+                SELECT chunks.entry_id, entries.title, entries.body,
+                       chunks.section, chunks.text
+                FROM entry_chunks chunks
+                JOIN entries ON entries.id = chunks.entry_id;
+                DELETE FROM schema_migrations WHERE version = 2;
+                ",
+            )
+            .expect("downgrade to schema v1");
+    }
+
+    let mut children = Vec::new();
+    for _ in 0..4 {
+        children.push(
+            belay()
+                .args(["search", "serialized migration"])
+                .current_dir(temporary.path())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn concurrent search"),
+        );
+    }
+    for child in children {
+        let output = child
+            .wait_with_output()
+            .expect("wait for concurrent search");
+        assert!(output.status.success(), "{output:?}");
+        assert!(
+            String::from_utf8(output.stdout)
+                .expect("search stdout")
+                .contains(&decision)
+        );
+    }
+
+    let connection = Connection::open(database_path).expect("reopen DB");
+    let migration_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = 2",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count migration rows");
+    assert_eq!(migration_count, 1);
+}
+
+#[test]
+fn context_is_linked_source_attributed_and_within_the_estimated_budget() {
+    let temporary = initialize_repository();
+    let decision = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Use SQLite migration",
+                "--body",
+                "SQLite migration defines the durable storage approach. "
+                    .repeat(20)
+                    .as_str(),
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add decision"),
+    );
+    let work = created_id(
+        &belay()
+            .args([
+                "add",
+                "work",
+                "--title",
+                "Implement storage",
+                "--body",
+                "Follow the accepted decision and validate the implementation.",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add work"),
+    );
+    let note = created_id(
+        &belay()
+            .args([
+                "add",
+                "note",
+                "--title",
+                "Second-hop note",
+                "--body",
+                "This note is intentionally two links away from the ranked decision.",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add note"),
+    );
+    let linked = belay()
+        .args(["link", &work, &decision, "--relation", "implements"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("link work to decision");
+    assert!(linked.status.success(), "{linked:?}");
+    let second_hop = belay()
+        .args(["link", &note, &work, "--relation", "references"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("link second-hop note");
+    assert!(second_hop.status.success(), "{second_hop:?}");
+
+    for format in ["agent", "human"] {
+        let output = belay()
+            .args([
+                "context",
+                "sqlite migration",
+                "--format",
+                format,
+                "--budget",
+                "500",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .unwrap_or_else(|error| panic!("generate {format} context: {error}"));
+        assert!(output.status.success(), "{output:?}");
+        let stdout = String::from_utf8(output.stdout).expect("context stdout");
+        assert!(stdout.contains(&decision));
+        assert!(stdout.contains(&work));
+        assert!(stdout.contains(&format!("belay show {decision}")));
+        assert!(stdout.contains("entries/"));
+        assert!(stdout.contains("linked from") || stdout.contains("links to"));
+        assert!(estimate_tokens(&stdout) <= 500);
+        assert!(!stdout.contains(&note));
+        assert!(!stdout.contains("entry_id"));
+    }
+
+    let default_budget = belay()
+        .args(["context", "sqlite migration", "--format", "agent"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("generate context with default budget");
+    assert!(default_budget.status.success(), "{default_budget:?}");
+    assert!(
+        String::from_utf8(default_budget.stdout)
+            .expect("default context stdout")
+            .contains("Budget: 2500 estimated tokens")
+    );
+}
+
+#[test]
+fn context_rejects_a_budget_too_small_for_attributed_output() {
+    let temporary = initialize_repository();
+    let output = belay()
+        .args([
+            "context",
+            "sqlite migration",
+            "--format",
+            "agent",
+            "--budget",
+            "32",
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("generate undersized context");
+    assert_eq!(output.status.code(), Some(4));
+    assert!(
+        String::from_utf8(output.stderr)
+            .expect("stderr")
+            .contains("at least 64")
+    );
+}
+
+#[test]
+fn context_keeps_late_matching_evidence_under_a_small_budget() {
+    let temporary = initialize_repository();
+    let body = format!(
+        "## Decision\n\n{}The durable choice is quartz-indexed storage.",
+        "Background material without the target term. ".repeat(30)
+    );
+    let decision = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Choose a storage strategy",
+                "--body",
+                &body,
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add decision"),
+    );
+
+    let output = belay()
+        .args([
+            "context",
+            "quartz-indexed",
+            "--format",
+            "agent",
+            "--budget",
+            "250",
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("generate compact context");
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("context stdout");
+    assert!(stdout.contains(&decision));
+    assert!(stdout.contains("The durable choice is quartz-indexed storage."));
+    assert!(stdout.contains("Evidence:"));
+    assert!(estimate_tokens(&stdout) <= 225);
+}
+
+#[test]
+fn context_truncates_oversized_minimum_evidence_instead_of_dropping_the_entry() {
+    let temporary = initialize_repository();
+    let body = format!(
+        "## Decision\n\nThe quartz-indexed choice remains required because {}",
+        "its durability evidence is extensive ".repeat(80)
+    );
+    let decision = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Oversized evidence",
+                "--body",
+                &body,
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add decision"),
+    );
+
+    let output = belay()
+        .args([
+            "context",
+            "quartz-indexed",
+            "--format",
+            "agent",
+            "--budget",
+            "250",
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("generate compact context");
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("context stdout");
+    assert!(stdout.contains(&decision));
+    assert!(stdout.contains("The quartz-indexed choice remains required"));
+    assert!(stdout.contains("..."));
+    assert!(estimate_tokens(&stdout) <= 225);
+}
+
+#[test]
+fn context_prefers_text_matches_over_heading_only_matches() {
+    let temporary = initialize_repository();
+    let body = format!(
+        "## Quartz\n\n{}The actual quartz requirement is retained.",
+        "Generic background sentence. ".repeat(20)
+    );
+    let decision = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Heading collision",
+                "--body",
+                &body,
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add decision"),
+    );
+
+    let output = belay()
+        .args(["context", "quartz", "--format", "agent", "--budget", "250"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("generate compact context");
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("context stdout");
+    assert!(stdout.contains(&decision));
+    assert!(stdout.contains("The actual quartz requirement is retained."));
+    assert!(estimate_tokens(&stdout) <= 225);
+}
+
+#[test]
+fn context_preserves_late_match_when_truncating_one_long_sentence() {
+    let temporary = initialize_repository();
+    let body = format!(
+        "## Decision\n\n{}the quartz-indexed requirement is retained because durability matters.",
+        "generic background words ".repeat(60)
+    );
+    let decision = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Late term in long sentence",
+                "--body",
+                &body,
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add decision"),
+    );
+
+    let output = belay()
+        .args([
+            "context",
+            "quartz-indexed",
+            "--format",
+            "agent",
+            "--budget",
+            "250",
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("generate compact context");
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("context stdout");
+    assert!(stdout.contains(&decision));
+    assert!(stdout.contains("quartz-indexed"));
+    assert!(estimate_tokens(&stdout) <= 225);
+}
+
+#[test]
+fn context_selects_breadth_before_expanding_oversized_top_evidence() {
+    let temporary = initialize_repository();
+    let decision_body = format!(
+        "## Decision\n\nThe quartz-indexed choice is required because {}",
+        "durability evidence remains extensive ".repeat(80)
+    );
+    let decision = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Primary storage decision",
+                "--body",
+                &decision_body,
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add decision"),
+    );
+    let work = created_id(
+        &belay()
+            .args([
+                "add",
+                "work",
+                "--title",
+                "Implement storage decision",
+                "--body",
+                "## Changes\n\nApply the selected storage approach and validate it.",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add work"),
+    );
+    let linked = belay()
+        .args(["link", &work, &decision, "--relation", "implements"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("link work");
+    assert!(linked.status.success(), "{linked:?}");
+
+    let output = belay()
+        .args([
+            "context",
+            "quartz-indexed",
+            "--format",
+            "agent",
+            "--budget",
+            "500",
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("generate broad context");
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("context stdout");
+    assert!(stdout.contains(&decision));
+    assert!(stdout.contains(&work));
+    assert!(estimate_tokens(&stdout) <= 450);
+}
+
+#[test]
+fn failed_mirror_replacement_rolls_back_sqlite_mutation() {
+    let temporary = initialize_repository();
+    let decision = created_id(
+        &belay()
+            .args(["add", "decision", "--title", "Decision", "--body", "Body"])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add decision"),
+    );
+    let mirror = temporary
+        .path()
+        .join(".belay/entries/decisions")
+        .join(format!("{decision}.md"));
+    fs::remove_file(&mirror).expect("remove mirror");
+
+    let output = belay()
+        .args(["status", &decision, "accepted"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("update status without mirror");
+    assert_eq!(output.status.code(), Some(6));
+
+    let connection =
+        Connection::open(temporary.path().join(".belay/state/belay.sqlite")).expect("open DB");
+    let state: (String, i64) = connection
+        .query_row(
+            "SELECT status, revision FROM entries WHERE display_id = ?1",
+            [&decision],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read entry state");
+    assert_eq!(state, ("proposed".to_owned(), 1));
+    let baseline_count: i64 = connection
+        .query_row(
+            "
+            SELECT COUNT(*)
+            FROM sync_state state
+            JOIN entries entry ON entry.id = state.entry_id
+            WHERE entry.display_id = ?1
+              AND state.sqlite_content_hash_at_last_sync =
+                  state.mirror_content_hash_at_last_sync
+            ",
+            [&decision],
+            |row| row.get(0),
+        )
+        .expect("read sync baseline");
+    assert_eq!(baseline_count, 1);
+}
+
+#[test]
+fn unsynchronized_markdown_is_not_overwritten_by_status_or_link() {
+    let temporary = initialize_repository();
+    let decision = created_id(
+        &belay()
+            .args(["add", "decision", "--title", "Decision", "--body", "Body"])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add decision"),
+    );
+    let work = created_id(
+        &belay()
+            .args(["add", "work", "--title", "Work", "--body", "Work body"])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add work"),
+    );
+    let initial_link = belay()
+        .args(["link", &decision, &work, "--relation", "references"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("create initial link");
+    assert!(initial_link.status.success(), "{initial_link:?}");
+    let mirror = temporary
+        .path()
+        .join(".belay/entries/decisions")
+        .join(format!("{decision}.md"));
+    let edited = fs::read_to_string(&mirror)
+        .expect("read mirror")
+        .replace("Body\n", "Direct Markdown edit\n");
+    fs::write(&mirror, &edited).expect("edit mirror");
+
+    let no_op_status = belay()
+        .args(["status", &decision, "proposed"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("repeat current status");
+    assert_eq!(no_op_status.status.code(), Some(5));
+    let changed_status = belay()
+        .args(["status", &decision, "accepted"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("update status");
+    assert_eq!(changed_status.status.code(), Some(5));
+    let duplicate_link = belay()
+        .args(["link", &decision, &work, "--relation", "references"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("repeat link");
+    assert_eq!(duplicate_link.status.code(), Some(5));
+    assert_eq!(
+        fs::read_to_string(&mirror).expect("read edited mirror"),
+        edited
+    );
+
+    let connection =
+        Connection::open(temporary.path().join(".belay/state/belay.sqlite")).expect("open DB");
+    let state: (String, i64) = connection
+        .query_row(
+            "SELECT status, revision FROM entries WHERE display_id = ?1",
+            [&decision],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read entry state");
+    let link_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM entry_links", [], |row| row.get(0))
+        .expect("count links");
+    assert_eq!(state, ("proposed".to_owned(), 2));
+    assert_eq!(link_count, 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn add_rejects_a_symlinked_managed_parent_without_external_write() {
+    use std::os::unix::fs::symlink;
+
+    let temporary = initialize_repository();
+    let external = tempdir().expect("create external directory");
+    let decisions = temporary.path().join(".belay/entries/decisions");
+    fs::remove_dir(&decisions).expect("remove decisions directory");
+    symlink(external.path(), &decisions).expect("symlink decisions directory");
+
+    let output = belay()
+        .args(["add", "decision", "--title", "Escaped", "--body", "Body"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("add decision");
+    assert_eq!(output.status.code(), Some(4));
+    assert_eq!(
+        fs::read_dir(external.path())
+            .expect("read external directory")
+            .count(),
+        0
+    );
+    let connection =
+        Connection::open(temporary.path().join(".belay/state/belay.sqlite")).expect("open DB");
+    let entry_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))
+        .expect("count entries");
+    assert_eq!(entry_count, 0);
+}
+
+#[test]
+fn sync_imports_markdown_only_changes_and_normalizes_managed_fields() {
+    let temporary = initialize_repository();
+    let decision = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Original title",
+                "--body",
+                "Original body",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add decision"),
+    );
+    let mirror = mirror_path(temporary.path(), "decisions", &decision);
+    let original =
+        markdown::parse(&fs::read_to_string(&mirror).expect("read mirror")).expect("parse mirror");
+    let edited = fs::read_to_string(&mirror)
+        .expect("read mirror")
+        .replace("title: Original title", "title: Markdown title")
+        .replace("revision: 1", "revision: 99")
+        .replace("Original body", "Markdown body");
+    fs::write(&mirror, edited).expect("edit mirror");
+
+    let output = belay()
+        .args(["sync", &decision])
+        .current_dir(temporary.path())
+        .output()
+        .expect("sync Markdown edit");
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8(output.stdout)
+            .expect("stdout is UTF-8")
+            .contains("imported Markdown")
+    );
+
+    let shown = belay()
+        .args(["show", &decision])
+        .current_dir(temporary.path())
+        .output()
+        .expect("show imported entry");
+    let stdout = String::from_utf8(shown.stdout).expect("stdout is UTF-8");
+    assert!(stdout.contains("Title: Markdown title"));
+    assert!(stdout.contains("Markdown body"));
+    assert!(stdout.contains("Revision: 2"));
+    let normalized = markdown::parse(&fs::read_to_string(&mirror).expect("read normalized mirror"))
+        .expect("parse normalized mirror");
+    assert_eq!(normalized.revision, 2);
+    assert_eq!(normalized.created_at, original.created_at);
+}
+
+#[test]
+fn sync_renders_sqlite_only_changes_and_resolves_both_preferences() {
+    let temporary = initialize_repository();
+    let decision = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Original",
+                "--body",
+                "Original body",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add decision"),
+    );
+    let database = temporary.path().join(".belay/state/belay.sqlite");
+    let mirror = mirror_path(temporary.path(), "decisions", &decision);
+    let connection = Connection::open(&database).expect("open database");
+    connection
+        .execute(
+            "UPDATE entries SET title = 'SQLite title' WHERE display_id = ?1",
+            [&decision],
+        )
+        .expect("edit SQLite");
+    drop(connection);
+
+    let sqlite_only = belay()
+        .args(["sync", &decision])
+        .current_dir(temporary.path())
+        .output()
+        .expect("sync SQLite edit");
+    assert!(sqlite_only.status.success(), "{sqlite_only:?}");
+    assert!(
+        fs::read_to_string(&mirror)
+            .expect("read rendered mirror")
+            .contains("title: SQLite title")
+    );
+
+    let markdown_conflict = fs::read_to_string(&mirror)
+        .expect("read mirror")
+        .replace("Original body", "Markdown conflict body");
+    fs::write(&mirror, markdown_conflict).expect("edit Markdown");
+    let connection = Connection::open(&database).expect("open database");
+    connection
+        .execute(
+            "UPDATE entries SET title = 'SQLite conflict title' WHERE display_id = ?1",
+            [&decision],
+        )
+        .expect("edit SQLite again");
+    drop(connection);
+
+    let conflict = belay()
+        .args(["sync", &decision])
+        .current_dir(temporary.path())
+        .output()
+        .expect("detect conflict");
+    assert_eq!(conflict.status.code(), Some(5));
+
+    let keep_markdown = belay()
+        .args(["sync", "--prefer", "markdown", &decision])
+        .current_dir(temporary.path())
+        .output()
+        .expect("prefer Markdown");
+    assert!(keep_markdown.status.success(), "{keep_markdown:?}");
+    let shown = belay()
+        .args(["show", &decision])
+        .current_dir(temporary.path())
+        .output()
+        .expect("show Markdown preference");
+    let stdout = String::from_utf8(shown.stdout).expect("stdout is UTF-8");
+    assert!(stdout.contains("Title: SQLite title"));
+    assert!(stdout.contains("Markdown conflict body"));
+
+    let edited = fs::read_to_string(&mirror)
+        .expect("read mirror")
+        .replace("Markdown conflict body", "Second Markdown conflict");
+    fs::write(&mirror, edited).expect("edit Markdown again");
+    let connection = Connection::open(&database).expect("open database");
+    connection
+        .execute(
+            "UPDATE entries SET title = 'Final SQLite title' WHERE display_id = ?1",
+            [&decision],
+        )
+        .expect("edit SQLite final");
+    drop(connection);
+    let keep_sqlite = belay()
+        .args(["sync", "--prefer", "sqlite", &decision])
+        .current_dir(temporary.path())
+        .output()
+        .expect("prefer SQLite");
+    assert!(keep_sqlite.status.success(), "{keep_sqlite:?}");
+    let rendered = fs::read_to_string(&mirror).expect("read SQLite preference mirror");
+    assert!(rendered.contains("title: Final SQLite title"));
+    assert!(rendered.contains("Markdown conflict body"));
+    assert!(!rendered.contains("Second Markdown conflict"));
+}
+
+#[test]
+fn sync_imports_new_markdown_and_restores_missing_counterparts() {
+    let temporary = initialize_repository();
+    let entry = Entry {
+        display_id: "NOTE-20260607T030000-001-direct-note".to_owned(),
+        entry_type: EntryType::Note,
+        title: "Direct note".to_owned(),
+        status: EntryStatus::Active,
+        created_at: "2026-06-07T03:00:00+09:00".to_owned(),
+        updated_at: "2026-06-07T03:00:00+09:00".to_owned(),
+        revision: 1,
+        tags: vec!["direct".to_owned()],
+        links: Vec::new(),
+        metadata: BTreeMap::new(),
+        body: "Directly authored Markdown".to_owned(),
+    };
+    let mirror = mirror_path(temporary.path(), "notes", &entry.display_id);
+    fs::write(
+        &mirror,
+        markdown::render(&entry).expect("render direct entry"),
+    )
+    .expect("write direct entry");
+
+    let imported = belay()
+        .arg("sync")
+        .current_dir(temporary.path())
+        .output()
+        .expect("import direct Markdown");
+    assert!(imported.status.success(), "{imported:?}");
+    let database = temporary.path().join(".belay/state/belay.sqlite");
+    let connection = Connection::open(&database).expect("open database");
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM entries WHERE display_id = ?1",
+            [&entry.display_id],
+            |row| row.get(0),
+        )
+        .expect("count imported entry");
+    assert_eq!(count, 1);
+    drop(connection);
+
+    fs::remove_file(&mirror).expect("remove mirror");
+    let restored_mirror = belay()
+        .args(["sync", &entry.display_id])
+        .current_dir(temporary.path())
+        .output()
+        .expect("restore mirror");
+    assert!(restored_mirror.status.success(), "{restored_mirror:?}");
+    assert!(mirror.exists());
+
+    let connection = Connection::open(&database).expect("open database");
+    connection
+        .execute("PRAGMA foreign_keys = OFF", [])
+        .expect("disable foreign keys");
+    connection
+        .execute(
+            "DELETE FROM entries WHERE display_id = ?1",
+            [&entry.display_id],
+        )
+        .expect("remove SQLite row");
+    drop(connection);
+    let restored_sqlite = belay()
+        .args(["sync", &entry.display_id])
+        .current_dir(temporary.path())
+        .output()
+        .expect("restore SQLite row");
+    assert!(restored_sqlite.status.success(), "{restored_sqlite:?}");
+    let connection = Connection::open(&database).expect("open database");
+    let restored: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM entries WHERE display_id = ?1",
+            [&entry.display_id],
+            |row| row.get(0),
+        )
+        .expect("count restored SQLite entry");
+    assert_eq!(restored, 1);
+}
+
+#[test]
+fn sync_restores_deleted_sqlite_targets_without_propagating_link_deletion() {
+    let temporary = initialize_repository();
+    let source = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Link source",
+                "--body",
+                "Source body",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add source"),
+    );
+    let target = created_id(
+        &belay()
+            .args([
+                "add",
+                "work",
+                "--title",
+                "Link target",
+                "--body",
+                "Target body",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add target"),
+    );
+    let linked = belay()
+        .args(["link", &source, &target, "--relation", "references"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("link entries");
+    assert!(linked.status.success(), "{linked:?}");
+    let source_mirror = mirror_path(temporary.path(), "decisions", &source);
+    let expected_mirror = fs::read_to_string(&source_mirror).expect("read linked mirror");
+
+    let database = temporary.path().join(".belay/state/belay.sqlite");
+    let connection = Connection::open(&database).expect("open database");
+    connection
+        .execute("DELETE FROM entries WHERE display_id = ?1", [&target])
+        .expect("delete target row");
+    drop(connection);
+
+    let output = belay()
+        .args(["sync", &source])
+        .current_dir(temporary.path())
+        .output()
+        .expect("restore target and relationships from targeted source sync");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(&source_mirror).expect("read preserved source mirror"),
+        expected_mirror
+    );
+    let connection = Connection::open(&database).expect("open restored database");
+    let link_count: i64 = connection
+        .query_row(
+            "
+            SELECT COUNT(*)
+            FROM entry_links links
+            JOIN entries source ON source.id = links.from_entry_id
+            JOIN entries target ON target.id = links.to_entry_id
+            WHERE source.display_id = ?1 AND target.display_id = ?2
+            ",
+            [&source, &target],
+            |row| row.get(0),
+        )
+        .expect("count restored link");
+    assert_eq!(link_count, 1);
+}
+
+#[test]
+fn sync_does_not_repair_links_from_markdown_before_conflict_classification() {
+    let temporary = initialize_repository();
+    let source = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Conflict source",
+                "--body",
+                "Source body",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add source"),
+    );
+    let target = created_id(
+        &belay()
+            .args([
+                "add",
+                "work",
+                "--title",
+                "Conflict target",
+                "--body",
+                "Target body",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add target"),
+    );
+    let linked = belay()
+        .args(["link", &source, &target, "--relation", "references"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("link entries");
+    assert!(linked.status.success(), "{linked:?}");
+    let source_mirror = mirror_path(temporary.path(), "decisions", &source);
+    let edited_mirror = fs::read_to_string(&source_mirror)
+        .expect("read linked mirror")
+        .replace("relation: references", "relation: supersedes");
+    fs::write(&source_mirror, &edited_mirror).expect("edit Markdown relationship");
+
+    let database = temporary.path().join(".belay/state/belay.sqlite");
+    let connection = Connection::open(&database).expect("open database");
+    connection
+        .execute(
+            "UPDATE entries SET title = 'SQLite conflict title' WHERE display_id = ?1",
+            [&source],
+        )
+        .expect("edit SQLite source");
+    connection
+        .execute("DELETE FROM entries WHERE display_id = ?1", [&target])
+        .expect("delete target row");
+    drop(connection);
+
+    let output = belay()
+        .args(["sync", &source])
+        .current_dir(temporary.path())
+        .output()
+        .expect("detect conflict after target restoration");
+    assert_eq!(output.status.code(), Some(5));
+    assert_eq!(
+        fs::read_to_string(&source_mirror).expect("read preserved source mirror"),
+        edited_mirror
+    );
+    let connection = Connection::open(&database).expect("open restored database");
+    let supersedes_count: i64 = connection
+        .query_row(
+            "
+            SELECT COUNT(*)
+            FROM entry_links links
+            JOIN entries source ON source.id = links.from_entry_id
+            WHERE source.display_id = ?1 AND links.relation = 'supersedes'
+            ",
+            [&source],
+            |row| row.get(0),
+        )
+        .expect("count prematurely repaired links");
+    let sqlite_title: String = connection
+        .query_row(
+            "SELECT title FROM entries WHERE display_id = ?1",
+            [&source],
+            |row| row.get(0),
+        )
+        .expect("read preserved SQLite title");
+    assert_eq!(supersedes_count, 0);
+    assert_eq!(sqlite_title, "SQLite conflict title");
+}
+
+#[test]
+fn sync_imports_mutually_linked_new_markdown_entries_without_order_dependency() {
+    let temporary = initialize_repository();
+    let first_id = "NOTE-20260607T031000-001-first".to_owned();
+    let second_id = "NOTE-20260607T031000-002-second".to_owned();
+    let first = Entry {
+        display_id: first_id.clone(),
+        entry_type: EntryType::Note,
+        title: "First note".to_owned(),
+        status: EntryStatus::Active,
+        created_at: "2026-06-07T03:10:00+09:00".to_owned(),
+        updated_at: "2026-06-07T03:10:00+09:00".to_owned(),
+        revision: 1,
+        tags: Vec::new(),
+        links: vec![EntryLink {
+            relation: LinkRelation::References,
+            id: second_id.clone(),
+            metadata: BTreeMap::new(),
+        }],
+        metadata: BTreeMap::new(),
+        body: "First body".to_owned(),
+    };
+    let second = Entry {
+        display_id: second_id.clone(),
+        entry_type: EntryType::Note,
+        title: "Second note".to_owned(),
+        status: EntryStatus::Active,
+        created_at: "2026-06-07T03:10:00+09:00".to_owned(),
+        updated_at: "2026-06-07T03:10:00+09:00".to_owned(),
+        revision: 1,
+        tags: Vec::new(),
+        links: vec![EntryLink {
+            relation: LinkRelation::References,
+            id: first_id.clone(),
+            metadata: BTreeMap::new(),
+        }],
+        metadata: BTreeMap::new(),
+        body: "Second body".to_owned(),
+    };
+    for entry in [&first, &second] {
+        fs::write(
+            mirror_path(temporary.path(), "notes", &entry.display_id),
+            markdown::render(entry).expect("render new linked entry"),
+        )
+        .expect("write new linked entry");
+    }
+
+    let output = belay()
+        .args(["sync", &first_id])
+        .current_dir(temporary.path())
+        .output()
+        .expect("import linked dependency closure");
+    assert!(output.status.success(), "{output:?}");
+    let connection =
+        Connection::open(temporary.path().join(".belay/state/belay.sqlite")).expect("open DB");
+    let entry_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM entries WHERE display_id IN (?1, ?2)",
+            [&first_id, &second_id],
+            |row| row.get(0),
+        )
+        .expect("count imported entries");
+    let link_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM entry_links", [], |row| row.get(0))
+        .expect("count imported links");
+    assert_eq!(entry_count, 2);
+    assert_eq!(link_count, 2);
+}
+
+#[test]
+fn sync_accepts_nested_path_only_rename_without_revision_churn() {
+    let temporary = initialize_repository();
+    let decision = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Rename path",
+                "--body",
+                "Body",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add decision"),
+    );
+    let original = mirror_path(temporary.path(), "decisions", &decision);
+    let nested_dir = temporary.path().join(".belay/entries/decisions/archive");
+    fs::create_dir(&nested_dir).expect("create nested directory");
+    let renamed = nested_dir.join(format!("{decision}.md"));
+    fs::rename(&original, &renamed).expect("rename mirror");
+
+    let output = belay()
+        .args(["sync", &decision])
+        .current_dir(temporary.path())
+        .output()
+        .expect("sync path rename");
+    assert!(output.status.success(), "{output:?}");
+    let shown = belay()
+        .args(["show", &decision])
+        .current_dir(temporary.path())
+        .output()
+        .expect("show renamed entry");
+    let stdout = String::from_utf8(shown.stdout).expect("stdout is UTF-8");
+    assert!(stdout.contains(&format!("Source: entries/decisions/archive/{decision}.md")));
+    assert!(stdout.contains("Revision: 1"));
+}
+
+#[test]
+fn rebuild_restores_entries_links_search_and_sync_baselines() {
+    let temporary = initialize_repository();
+    let decision = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Rebuild decision",
+                "--body",
+                "Searchable rebuild body",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add decision"),
+    );
+    let work = created_id(
+        &belay()
+            .args([
+                "add",
+                "work",
+                "--title",
+                "Rebuild work",
+                "--body",
+                "Implement rebuild",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add work"),
+    );
+    let linked = belay()
+        .args(["link", &work, &decision, "--relation", "implements"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("link entries");
+    assert!(linked.status.success(), "{linked:?}");
+    let database = temporary.path().join(".belay/state/belay.sqlite");
+    fs::remove_file(&database).expect("remove database");
+
+    let rebuilt = belay()
+        .arg("rebuild")
+        .current_dir(temporary.path())
+        .output()
+        .expect("rebuild database");
+    assert!(rebuilt.status.success(), "{rebuilt:?}");
+    let shown = belay()
+        .args(["show", &work])
+        .current_dir(temporary.path())
+        .output()
+        .expect("show rebuilt work");
+    assert!(
+        String::from_utf8(shown.stdout)
+            .expect("stdout is UTF-8")
+            .contains(&format!("implements {decision}"))
+    );
+    let search = belay()
+        .args(["search", "Searchable rebuild"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("search rebuilt database");
+    assert!(
+        String::from_utf8(search.stdout)
+            .expect("stdout is UTF-8")
+            .contains(&decision)
+    );
+    let connection = Connection::open(&database).expect("open rebuilt database");
+    let counts: (i64, i64, i64) = connection
+        .query_row(
+            "
+            SELECT
+              (SELECT COUNT(*) FROM entries),
+              (SELECT COUNT(*) FROM entry_links),
+              (SELECT COUNT(*) FROM sync_state)
+            ",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("read rebuilt counts");
+    assert_eq!(counts, (2, 1, 2));
+}
+
+#[test]
+fn rebuild_validation_failure_preserves_existing_database() {
+    let temporary = initialize_repository();
+    let decision = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Keep database",
+                "--body",
+                "Body",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add decision"),
+    );
+    let mirror = mirror_path(temporary.path(), "decisions", &decision);
+    fs::write(&mirror, "invalid Markdown\n").expect("invalidate mirror");
+
+    let rebuilt = belay()
+        .arg("rebuild")
+        .current_dir(temporary.path())
+        .output()
+        .expect("reject invalid rebuild");
+    assert_eq!(rebuilt.status.code(), Some(4));
+    let connection =
+        Connection::open(temporary.path().join(".belay/state/belay.sqlite")).expect("open DB");
+    let title: String = connection
+        .query_row(
+            "SELECT title FROM entries WHERE display_id = ?1",
+            [&decision],
+            |row| row.get(0),
+        )
+        .expect("read preserved database");
+    assert_eq!(title, "Keep database");
+}
+
+#[test]
+fn doctor_reports_sync_drift_temporary_files_and_invalid_mirrors() {
+    let temporary = initialize_repository();
+    let decision = created_id(
+        &belay()
+            .args(["add", "decision", "--title", "Doctor", "--body", "Body"])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add decision"),
+    );
+    let mirror = mirror_path(temporary.path(), "decisions", &decision);
+    let edited = fs::read_to_string(&mirror)
+        .expect("read mirror")
+        .replace("Body", "Drifted body");
+    fs::write(&mirror, edited).expect("edit mirror");
+    let temporary_file = temporary
+        .path()
+        .join(".belay/entries/decisions/.orphan.tmp-1");
+    fs::write(&temporary_file, "temporary").expect("write orphan temp");
+
+    let drift = belay()
+        .arg("doctor")
+        .current_dir(temporary.path())
+        .output()
+        .expect("doctor drift");
+    assert_eq!(drift.status.code(), Some(5));
+    let stdout = String::from_utf8(drift.stdout).expect("stdout is UTF-8");
+    assert!(stdout.contains("SQLite/Markdown drift: drift"));
+    assert!(stdout.contains("orphaned temporary files: drift"));
+
+    fs::remove_file(&temporary_file).expect("remove temp");
+    let wrong = temporary
+        .path()
+        .join(".belay/entries/decisions/wrong-name.md");
+    fs::rename(&mirror, &wrong).expect("create invalid path");
+    let invalid = belay()
+        .arg("doctor")
+        .current_dir(temporary.path())
+        .output()
+        .expect("doctor invalid mirror");
+    assert_eq!(invalid.status.code(), Some(4));
+    assert!(
+        String::from_utf8(invalid.stdout)
+            .expect("stdout is UTF-8")
+            .contains("managed Markdown: invalid")
+    );
+}
+
+#[test]
+fn doctor_rejects_missing_operational_fts_table() {
+    let temporary = initialize_repository();
+    let database = temporary.path().join(".belay/state/belay.sqlite");
+    let connection = Connection::open(&database).expect("open database");
+    connection
+        .execute_batch("DROP TABLE entry_fts;")
+        .expect("drop operational FTS table");
+    drop(connection);
+
+    let output = belay()
+        .arg("doctor")
+        .current_dir(temporary.path())
+        .output()
+        .expect("diagnose missing FTS table");
+    assert_eq!(output.status.code(), Some(4));
+    let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    assert!(stdout.contains("SQLite schema: invalid"));
+    assert!(stdout.contains("entry_fts"));
+}
+
+#[test]
+fn sync_rejects_duplicate_and_ambiguous_unbaselined_entries_without_overwrite() {
+    let temporary = initialize_repository();
+    let decision = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Duplicate guard",
+                "--body",
+                "Original body",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add decision"),
+    );
+    let mirror = mirror_path(temporary.path(), "decisions", &decision);
+    let nested = temporary.path().join(".belay/entries/decisions/copy");
+    fs::create_dir(&nested).expect("create duplicate directory");
+    fs::copy(&mirror, nested.join(format!("{decision}.md"))).expect("copy duplicate mirror");
+    let duplicate = belay()
+        .arg("sync")
+        .current_dir(temporary.path())
+        .output()
+        .expect("reject duplicate");
+    assert_eq!(duplicate.status.code(), Some(4));
+    fs::remove_dir_all(&nested).expect("remove duplicate");
+
+    let database = temporary.path().join(".belay/state/belay.sqlite");
+    let connection = Connection::open(&database).expect("open database");
+    connection
+        .execute(
+            "DELETE FROM sync_state WHERE entry_id = (SELECT id FROM entries WHERE display_id = ?1)",
+            [&decision],
+        )
+        .expect("remove baseline");
+    drop(connection);
+    let edited = fs::read_to_string(&mirror)
+        .expect("read mirror")
+        .replace("Original body", "Independent Markdown body");
+    fs::write(&mirror, &edited).expect("edit unbaselined mirror");
+    let ambiguous = belay()
+        .args(["sync", &decision])
+        .current_dir(temporary.path())
+        .output()
+        .expect("reject ambiguity");
+    assert_eq!(ambiguous.status.code(), Some(5));
+    assert_eq!(
+        fs::read_to_string(&mirror).expect("read preserved mirror"),
+        edited
+    );
+    let connection = Connection::open(&database).expect("open database");
+    let body: String = connection
+        .query_row(
+            "SELECT body FROM entries WHERE display_id = ?1",
+            [&decision],
+            |row| row.get(0),
+        )
+        .expect("read preserved SQLite body");
+    assert_eq!(body, "Original body");
+}
+
+#[test]
+fn batch_sync_reports_conflict_after_completing_independent_entries() {
+    let temporary = initialize_repository();
+    let conflict_id = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Conflict entry",
+                "--body",
+                "Conflict body",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add conflict entry"),
+    );
+    let independent_id = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Independent entry",
+                "--body",
+                "Independent body",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add independent entry"),
+    );
+    let conflict_mirror = mirror_path(temporary.path(), "decisions", &conflict_id);
+    let edited = fs::read_to_string(&conflict_mirror)
+        .expect("read conflict mirror")
+        .replace("Conflict body", "Markdown conflict");
+    fs::write(&conflict_mirror, &edited).expect("edit conflict mirror");
+    let database = temporary.path().join(".belay/state/belay.sqlite");
+    let connection = Connection::open(&database).expect("open database");
+    connection
+        .execute(
+            "UPDATE entries SET title = 'SQLite conflict' WHERE display_id = ?1",
+            [&conflict_id],
+        )
+        .expect("edit conflict SQLite");
+    connection
+        .execute(
+            "UPDATE entries SET title = 'Independent SQLite update' WHERE display_id = ?1",
+            [&independent_id],
+        )
+        .expect("edit independent SQLite");
+    drop(connection);
+
+    let output = belay()
+        .arg("sync")
+        .current_dir(temporary.path())
+        .output()
+        .expect("run batch sync");
+    assert_eq!(output.status.code(), Some(5));
+    let independent_mirror = mirror_path(temporary.path(), "decisions", &independent_id);
+    assert!(
+        fs::read_to_string(independent_mirror)
+            .expect("read completed independent mirror")
+            .contains("title: Independent SQLite update")
+    );
+    assert_eq!(
+        fs::read_to_string(conflict_mirror).expect("read preserved conflict mirror"),
+        edited
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn batch_sync_reports_completed_entries_before_a_storage_failure() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temporary = initialize_repository();
+    let first = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "First storage entry",
+                "--body",
+                "First body",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add first entry"),
+    );
+    let second = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Second storage entry",
+                "--body",
+                "Second body",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add second entry"),
+    );
+    let second_original = mirror_path(temporary.path(), "decisions", &second);
+    let protected_directory = temporary.path().join(".belay/entries/decisions/protected");
+    fs::create_dir(&protected_directory).expect("create protected directory");
+    let second_nested = protected_directory.join(format!("{second}.md"));
+    fs::rename(&second_original, &second_nested).expect("move second mirror");
+    let renamed = belay()
+        .args(["sync", &second])
+        .current_dir(temporary.path())
+        .output()
+        .expect("accept second path rename");
+    assert!(renamed.status.success(), "{renamed:?}");
+
+    let database = temporary.path().join(".belay/state/belay.sqlite");
+    let connection = Connection::open(&database).expect("open database");
+    connection
+        .execute(
+            "UPDATE entries SET title = 'First completed update' WHERE display_id = ?1",
+            [&first],
+        )
+        .expect("update first entry");
+    connection
+        .execute(
+            "UPDATE entries SET title = 'Second failed update' WHERE display_id = ?1",
+            [&second],
+        )
+        .expect("update second entry");
+    drop(connection);
+
+    fs::set_permissions(&protected_directory, fs::Permissions::from_mode(0o500))
+        .expect("protect second mirror directory");
+    let output = belay()
+        .arg("sync")
+        .current_dir(temporary.path())
+        .output()
+        .expect("run batch with storage failure");
+    fs::set_permissions(&protected_directory, fs::Permissions::from_mode(0o700))
+        .expect("restore directory permissions");
+
+    assert_eq!(output.status.code(), Some(6));
+    let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(stdout.contains(&first));
+    assert!(stdout.contains("rendered SQLite"));
+    assert!(stderr.contains(&second));
+    assert!(
+        fs::read_to_string(mirror_path(temporary.path(), "decisions", &first))
+            .expect("read completed first mirror")
+            .contains("title: First completed update")
+    );
+    assert!(
+        fs::read_to_string(&second_nested)
+            .expect("read preserved second mirror")
+            .contains("title: Second storage entry")
+    );
+}
+
+#[test]
+fn export_writes_parseable_filtered_snapshots_without_internal_ids() {
+    let temporary = initialize_repository();
+    let decision = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Exported decision",
+                "--body",
+                "Decision body",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add decision"),
+    );
+    let work = created_id(
+        &belay()
+            .args([
+                "add",
+                "work",
+                "--title",
+                "Excluded work",
+                "--body",
+                "Work body",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add work"),
+    );
+    let status = belay()
+        .args(["status", &decision, "accepted"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("accept decision");
+    assert!(status.status.success(), "{status:?}");
+    let database = temporary.path().join(".belay/state/belay.sqlite");
+    let connection = Connection::open(&database).expect("open database");
+    connection
+        .execute(
+            "
+            INSERT INTO entry_tags(entry_id, tag)
+            SELECT id, 'release' FROM entries WHERE display_id = ?1
+            ",
+            [&decision],
+        )
+        .expect("add export filter tag");
+    let before: (i64, i64, String) = connection
+        .query_row(
+            "
+            SELECT
+                (SELECT COUNT(*) FROM entries),
+                (SELECT COUNT(*) FROM sync_state),
+                (SELECT GROUP_CONCAT(display_id || ':' || revision || ':' || updated_at, '|')
+                 FROM (SELECT display_id, revision, updated_at FROM entries ORDER BY display_id))
+            ",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("snapshot state before export");
+    drop(connection);
+    let decision_mirror = mirror_path(temporary.path(), "decisions", &decision);
+    let work_mirror = mirror_path(temporary.path(), "work", &work);
+    let mirrors_before = (
+        fs::read_to_string(&decision_mirror).expect("read decision mirror"),
+        fs::read_to_string(&work_mirror).expect("read work mirror"),
+    );
+
+    let json_path = temporary.path().join("artifacts/accepted.json");
+    let json_output = belay()
+        .args([
+            "export",
+            "json",
+            "--type",
+            "decision",
+            "--status",
+            "accepted",
+            "--tag",
+            "release",
+            "--output",
+            json_path.to_str().expect("UTF-8 path"),
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("export JSON");
+    assert!(json_output.status.success(), "{json_output:?}");
+    let json: serde_json::Value =
+        serde_json::from_slice(&fs::read(&json_path).expect("read JSON export"))
+            .expect("parse JSON export");
+    let entries = json["entries"].as_array().expect("entries array");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["id"], decision);
+    assert_eq!(entries[0]["type"], "decision");
+    assert!(entries[0].get("internal_id").is_none());
+    assert!(
+        !fs::read_to_string(&json_path)
+            .expect("read JSON text")
+            .contains("\"entry_id\"")
+    );
+
+    let ndjson_path = temporary.path().join("artifacts/all.ndjson");
+    let ndjson_output = belay()
+        .args([
+            "export",
+            "ndjson",
+            "--output",
+            ndjson_path.to_str().expect("UTF-8 path"),
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("export NDJSON");
+    assert!(ndjson_output.status.success(), "{ndjson_output:?}");
+    let ndjson = fs::read_to_string(&ndjson_path).expect("read NDJSON export");
+    let ndjson_entries = ndjson
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("parse NDJSON line"))
+        .collect::<Vec<_>>();
+    assert_eq!(ndjson_entries.len(), 2);
+    assert!(ndjson_entries.iter().all(|entry| entry["id"].is_string()));
+    assert!(
+        ndjson_entries
+            .iter()
+            .all(|entry| entry.get("internal_id").is_none())
+    );
+
+    let markdown_path = temporary.path().join("artifacts/decision.md");
+    let markdown_output = belay()
+        .args([
+            "export",
+            "markdown",
+            "--id",
+            &decision,
+            "--output",
+            markdown_path.to_str().expect("UTF-8 path"),
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("export Markdown");
+    assert!(markdown_output.status.success(), "{markdown_output:?}");
+    let markdown = fs::read_to_string(markdown_path).expect("read Markdown export");
+    assert!(markdown.contains("# belay-trace export"));
+    assert!(markdown.contains("not a managed mirror"));
+    assert!(markdown.contains(&format!("# {decision}: Exported decision")));
+    assert!(!markdown.contains(&work));
+
+    let connection = Connection::open(&database).expect("reopen database");
+    let after: (i64, i64, String) = connection
+        .query_row(
+            "
+            SELECT
+                (SELECT COUNT(*) FROM entries),
+                (SELECT COUNT(*) FROM sync_state),
+                (SELECT GROUP_CONCAT(display_id || ':' || revision || ':' || updated_at, '|')
+                 FROM (SELECT display_id, revision, updated_at FROM entries ORDER BY display_id))
+            ",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("snapshot state after export");
+    assert_eq!(after, before);
+    assert_eq!(
+        fs::read_to_string(decision_mirror).expect("read unchanged decision mirror"),
+        mirrors_before.0
+    );
+    assert_eq!(
+        fs::read_to_string(work_mirror).expect("read unchanged work mirror"),
+        mirrors_before.1
+    );
+}
+
+#[test]
+fn export_rejects_managed_mirror_destinations_and_is_deterministic() {
+    let temporary = initialize_repository();
+    created_id(
+        &belay()
+            .args([
+                "add",
+                "note",
+                "--title",
+                "Stable export",
+                "--body",
+                "Stable body",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add note"),
+    );
+    let managed_output = temporary.path().join(".belay/entries/notes/export.json");
+    let rejected = belay()
+        .args([
+            "export",
+            "json",
+            "--output",
+            managed_output.to_str().expect("UTF-8 path"),
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("reject managed destination");
+    assert_eq!(rejected.status.code(), Some(4));
+    assert!(!managed_output.exists());
+    let managed_new_directory = temporary.path().join(".belay/exported/new");
+    let rejected_new_directory = belay()
+        .args([
+            "export",
+            "json",
+            "--output",
+            managed_new_directory
+                .join("snapshot.json")
+                .to_str()
+                .expect("UTF-8 path"),
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("reject new managed destination");
+    assert_eq!(rejected_new_directory.status.code(), Some(4));
+    assert!(!managed_new_directory.exists());
+    let state_output = temporary.path().join(".belay/state/belay.sqlite");
+    let state_before = fs::metadata(&state_output).expect("inspect database").len();
+    let state_rejected = belay()
+        .args([
+            "export",
+            "json",
+            "--output",
+            state_output.to_str().expect("UTF-8 path"),
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("reject managed state destination");
+    assert_eq!(state_rejected.status.code(), Some(4));
+    assert_eq!(
+        fs::metadata(state_output)
+            .expect("inspect preserved database")
+            .len(),
+        state_before
+    );
+
+    let output = temporary.path().join("snapshot.json");
+    for _ in 0..2 {
+        let exported = belay()
+            .args([
+                "export",
+                "json",
+                "--output",
+                output.to_str().expect("UTF-8 path"),
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("write deterministic export");
+        assert!(exported.status.success(), "{exported:?}");
+        let current = fs::read(&output).expect("read export");
+        if output.with_extension("first").exists() {
+            assert_eq!(
+                current,
+                fs::read(output.with_extension("first")).expect("read first export")
+            );
+        } else {
+            fs::write(output.with_extension("first"), current).expect("save first export");
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        fs::set_permissions(&output, fs::Permissions::from_mode(0o640))
+            .expect("set export permissions");
+        let exported = belay()
+            .args([
+                "export",
+                "json",
+                "--output",
+                output.to_str().expect("UTF-8 path"),
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("replace export with preserved permissions");
+        assert!(exported.status.success(), "{exported:?}");
+        assert_eq!(
+            fs::metadata(&output).expect("inspect export mode").mode() & 0o777,
+            0o640
+        );
+    }
+}
