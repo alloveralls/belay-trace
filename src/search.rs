@@ -100,7 +100,7 @@ pub fn linked_results(
             .prepare(
                 "
                 SELECT links.from_entry_id, source.display_id,
-                       links.to_entry_id, target.display_id, links.relation
+                       links.to_entry_id, target.display_id, links.to_fragment, links.relation
                 FROM entry_links links
                 JOIN entries source ON source.id = links.from_entry_id
                 JOIN entries target ON target.id = links.to_entry_id
@@ -117,18 +117,27 @@ pub fn linked_results(
                     row.get::<_, i64>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
                 ))
             })
             .map_err(|source| BelayError::sqlite(&database_path, source))?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|source| BelayError::sqlite(&database_path, source))?;
 
-        for (from_id, from_display_id, to_id, to_display_id, relation) in links {
+        for (from_id, from_display_id, to_id, to_display_id, to_fragment, relation) in links {
+            let target_reference = if to_fragment.is_empty() {
+                to_display_id.clone()
+            } else {
+                format!("{to_display_id}#{to_fragment}")
+            };
             let (linked_id, linked_display_id, reason) = if from_id == seed.internal_id {
                 (
                     to_id,
                     to_display_id,
-                    format!("linked from {} via {}", seed.display_id, relation),
+                    format!(
+                        "linked from {} via {} to {}",
+                        seed.display_id, relation, target_reference
+                    ),
                 )
             } else {
                 (

@@ -22,7 +22,7 @@ use std::os::fd::OwnedFd;
 use crate::database;
 use crate::entry::{
     Entry, EntryLink, EntryStatus, EntryType, LinkRelation, MetadataValue, allocate_display_id,
-    begin_immediate, parse_display_id,
+    begin_immediate, parse_display_id, parse_entry_reference_id,
 };
 use crate::error::BelayError;
 use crate::markdown::{self, EntryChunk};
@@ -145,8 +145,8 @@ pub fn link(
     relation: LinkRelation,
 ) -> Result<MutationOutcome, BelayError> {
     parse_display_id(from)?;
-    parse_display_id(to)?;
-    if from == to {
+    let to_reference = parse_entry_reference_id(to)?;
+    if from == to_reference.display_id {
         return validation("entry links must not target the same display ID");
     }
 
@@ -154,17 +154,22 @@ pub fn link(
     let mut connection = database::open(&database_path)?;
     let transaction = begin_immediate(&mut connection, &database_path)?;
     let from_id = resolve_internal_id(&transaction, &database_path, from)?;
-    let to_id = resolve_internal_id(&transaction, &database_path, to)?;
+    let to_id = resolve_internal_id(&transaction, &database_path, &to_reference.display_id)?;
     let expected_mirror_hash =
         ensure_no_mirror_drift(repository, &transaction, &database_path, from_id)?;
     let inserted = transaction
         .execute(
             "
             INSERT OR IGNORE INTO entry_links(
-                from_entry_id, to_entry_id, relation, metadata_json
-            ) VALUES (?1, ?2, ?3, '{}')
+                from_entry_id, to_entry_id, to_fragment, relation, metadata_json
+            ) VALUES (?1, ?2, ?3, ?4, '{}')
             ",
-            params![from_id, to_id, relation.to_string()],
+            params![
+                from_id,
+                to_id,
+                to_reference.fragment.as_deref().unwrap_or(""),
+                relation.to_string()
+            ],
         )
         .map_err(|source| BelayError::sqlite(&database_path, source))?;
     if inserted == 0 {
@@ -451,15 +456,15 @@ fn load_links(
 ) -> Result<Vec<EntryLink>, BelayError> {
     let sql = if outbound {
         "
-        SELECT links.relation, target.display_id, links.metadata_json
+        SELECT links.relation, target.display_id, links.to_fragment, links.metadata_json
         FROM entry_links links
         JOIN entries target ON target.id = links.to_entry_id
         WHERE links.from_entry_id = ?1
-        ORDER BY links.relation, target.display_id
+        ORDER BY links.relation, target.display_id, links.to_fragment
         "
     } else {
         "
-        SELECT links.relation, source.display_id, links.metadata_json
+        SELECT links.relation, source.display_id, '', links.metadata_json
         FROM entry_links links
         JOIN entries source ON source.id = links.from_entry_id
         WHERE links.to_entry_id = ?1
@@ -472,10 +477,17 @@ fn load_links(
     statement
         .query_map([internal_id], |row| {
             let relation = row.get::<_, String>(0)?;
-            let metadata = row.get::<_, String>(2)?;
+            let display_id = row.get::<_, String>(1)?;
+            let fragment = row.get::<_, String>(2)?;
+            let metadata = row.get::<_, String>(3)?;
+            let id = if fragment.is_empty() {
+                display_id
+            } else {
+                format!("{display_id}#{fragment}")
+            };
             Ok(EntryLink {
                 relation: relation.parse().map_err(conversion_error)?,
-                id: row.get(1)?,
+                id,
                 metadata: serde_json::from_str(&metadata).map_err(conversion_error)?,
             })
         })
@@ -715,7 +727,8 @@ pub(crate) fn replace_links(
         )
         .map_err(|source| BelayError::sqlite(database_path, source))?;
     for link in links {
-        let target_id = resolve_internal_id(connection, database_path, &link.id)?;
+        let target = parse_entry_reference_id(&link.id)?;
+        let target_id = resolve_internal_id(connection, database_path, &target.display_id)?;
         let metadata =
             serde_json::to_string(&link.metadata).map_err(|source| BelayError::Validation {
                 message: format!("could not serialize link metadata: {source}"),
@@ -724,10 +737,16 @@ pub(crate) fn replace_links(
             .execute(
                 "
                 INSERT INTO entry_links(
-                    from_entry_id, to_entry_id, relation, metadata_json
-                ) VALUES (?1, ?2, ?3, ?4)
+                    from_entry_id, to_entry_id, to_fragment, relation, metadata_json
+                ) VALUES (?1, ?2, ?3, ?4, ?5)
                 ",
-                params![internal_id, target_id, link.relation.to_string(), metadata],
+                params![
+                    internal_id,
+                    target_id,
+                    target.fragment.as_deref().unwrap_or(""),
+                    link.relation.to_string(),
+                    metadata
+                ],
             )
             .map_err(|source| BelayError::sqlite(database_path, source))?;
     }

@@ -13,6 +13,10 @@ pub struct Config {
     pub schema_version: u32,
     pub storage: StorageConfig,
     pub features: FeatureConfig,
+    #[serde(default)]
+    pub lint: LintConfig,
+    #[serde(default)]
+    pub verify: VerifyConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +30,36 @@ pub struct StorageConfig {
 #[serde(deny_unknown_fields)]
 pub struct FeatureConfig {
     pub embeddings: EmbeddingMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct LintConfig {
+    #[serde(default, rename = "ambiguous-terms")]
+    pub ambiguous_terms: Vec<String>,
+    #[serde(default, rename = "allowed-terms")]
+    pub allowed_terms: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VerifyConfig {
+    #[serde(
+        default = "default_stale_after_commits",
+        rename = "stale-after-commits"
+    )]
+    pub stale_after_commits: u32,
+    #[serde(default = "default_stale_after_days", rename = "stale-after-days")]
+    pub stale_after_days: u32,
+}
+
+impl Default for VerifyConfig {
+    fn default() -> Self {
+        Self {
+            stale_after_commits: default_stale_after_commits(),
+            stale_after_days: default_stale_after_days(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +81,8 @@ impl Default for Config {
             features: FeatureConfig {
                 embeddings: EmbeddingMode::Disabled,
             },
+            lint: LintConfig::default(),
+            verify: VerifyConfig::default(),
         }
     }
 }
@@ -87,6 +123,14 @@ impl Config {
         validate_managed_path(path, "storage.entries", &self.storage.entries)?;
         Ok(())
     }
+}
+
+const fn default_stale_after_commits() -> u32 {
+    30
+}
+
+const fn default_stale_after_days() -> u32 {
+    14
 }
 
 fn validate_managed_path(

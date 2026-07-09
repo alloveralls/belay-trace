@@ -1170,7 +1170,7 @@ fn search_automatically_migrates_a_schema_v1_repository() {
             |row| row.get(0),
         )
         .expect("read FTS schema");
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
     assert!(fts_sql.contains("chunk_ordinal UNINDEXED"));
 }
 
@@ -2943,4 +2943,96 @@ fn export_rejects_managed_mirror_destinations_and_is_deterministic() {
             0o640
         );
     }
+}
+
+#[test]
+fn goal_verify_coverage_and_compile_work_together() {
+    let temporary = initialize_repository();
+    let goal = created_id(
+        &belay()
+            .args(["add", "goal", "--title", "Reliable sync"])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add goal"),
+    );
+    let work = created_id(
+        &belay()
+            .args([
+                "add",
+                "work",
+                "--title",
+                "Implement reliable sync",
+                "--body",
+                "## Changes\n\nImplement reliable sync behavior.",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add work"),
+    );
+    let activated = belay()
+        .args(["status", &goal, "active"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("activate goal");
+    assert!(activated.status.success(), "{activated:?}");
+    let linked = belay()
+        .args(["link", &work, &goal, "--relation", "fulfills"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("link work to goal");
+    assert!(linked.status.success(), "{linked:?}");
+
+    let lint = belay()
+        .args(["goal", "lint", &goal])
+        .current_dir(temporary.path())
+        .output()
+        .expect("lint goal");
+    assert!(lint.status.success(), "{lint:?}");
+    let lint_stdout = String::from_utf8(lint.stdout).expect("lint stdout");
+    assert!(lint_stdout.contains("Checklist:"));
+
+    let evidence = belay()
+        .args([
+            "verify",
+            "record",
+            "--kind",
+            "test",
+            "--verdict",
+            "pass",
+            "--source",
+            "cargo test",
+            "--summary",
+            "all tests passed",
+            "--verifies",
+            &goal,
+            "--verifies",
+            &work,
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("record evidence");
+    assert!(evidence.status.success(), "{evidence:?}");
+    assert!(temporary.path().join(".belay/evidence").exists());
+
+    let coverage = belay()
+        .args(["coverage", "--fail-under", "verified=0"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("coverage");
+    assert!(coverage.status.success(), "{coverage:?}");
+    let coverage_stdout = String::from_utf8(coverage.stdout).expect("coverage stdout");
+    assert!(coverage_stdout.contains("Active goals: 1"));
+    assert!(coverage_stdout.contains("traceability"));
+    assert!(coverage_stdout.contains("verified"));
+
+    let compiled = belay()
+        .args(["context", "compile", "reliable sync", "--format", "agent"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("compile context");
+    assert!(compiled.status.success(), "{compiled:?}");
+    let compiled_stdout = String::from_utf8(compiled.stdout).expect("compiled stdout");
+    assert!(compiled_stdout.contains("# Context: reliable sync"));
+    assert!(compiled_stdout.contains("## Goals"));
+    assert!(compiled_stdout.contains(&goal));
 }

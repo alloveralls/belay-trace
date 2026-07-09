@@ -10,7 +10,7 @@ use rustix::fs::{AtFlags, Mode, OFlags, RenameFlags};
 
 use crate::agent;
 use crate::database;
-use crate::entry::{Entry, EntryType, begin_immediate, parse_display_id};
+use crate::entry::{Entry, EntryType, begin_immediate, parse_display_id, parse_entry_reference_id};
 use crate::error::BelayError;
 use crate::markdown;
 use crate::repository::Repository;
@@ -395,10 +395,12 @@ fn restore_links_to_targets(
             Err(error) => return Err(error),
         };
         for link in &mirror.entry.links {
-            if !restored_targets.contains(&link.id) {
+            let target = parse_entry_reference_id(&link.id)?;
+            if !restored_targets.contains(&target.display_id) {
                 continue;
             }
-            let target_id = store::resolve_internal_id(&transaction, &database_path, &link.id)?;
+            let target_id =
+                store::resolve_internal_id(&transaction, &database_path, &target.display_id)?;
             let metadata =
                 serde_json::to_string(&link.metadata).map_err(|source| BelayError::Validation {
                     message: format!("could not serialize link metadata: {source}"),
@@ -407,12 +409,18 @@ fn restore_links_to_targets(
                 .execute(
                     "
                     INSERT INTO entry_links(
-                        from_entry_id, to_entry_id, relation, metadata_json
-                    ) VALUES (?1, ?2, ?3, ?4)
-                    ON CONFLICT(from_entry_id, to_entry_id, relation)
+                        from_entry_id, to_entry_id, to_fragment, relation, metadata_json
+                    ) VALUES (?1, ?2, ?3, ?4, ?5)
+                    ON CONFLICT(from_entry_id, to_entry_id, to_fragment, relation)
                     DO UPDATE SET metadata_json = excluded.metadata_json
                     ",
-                    params![source_id, target_id, link.relation.to_string(), metadata],
+                    params![
+                        source_id,
+                        target_id,
+                        target.fragment.as_deref().unwrap_or(""),
+                        link.relation.to_string(),
+                        metadata
+                    ],
                 )
                 .map_err(|source| BelayError::sqlite(&database_path, source))?;
         }
@@ -730,6 +738,7 @@ pub fn rebuild(repository: &Repository) -> Result<usize, BelayError> {
                 &now(),
             )?;
         }
+        crate::evidence::rebuild_into(repository, &transaction, &temporary)?;
         transaction.commit()?;
         drop(connection);
         Ok::<(), BelayError>(())
@@ -961,7 +970,52 @@ pub fn doctor(repository: &Repository) -> DoctorReport {
                     });
                 }
             }
+            match crate::evidence::stale_doctor_details(repository, &connection, &database_path) {
+                Ok(details) if details.is_empty() => checks.push(DoctorCheck {
+                    name: "Evidence freshness".to_owned(),
+                    status: "ok",
+                    detail: "fresh or not required".to_owned(),
+                }),
+                Ok(details) => {
+                    checks.push(DoctorCheck {
+                        name: "Evidence freshness".to_owned(),
+                        status: "drift",
+                        detail: details.join("; "),
+                    });
+                }
+                Err(error) => {
+                    has_invalid = true;
+                    checks.push(DoctorCheck {
+                        name: "Evidence freshness".to_owned(),
+                        status: "invalid",
+                        detail: error.to_string(),
+                    });
+                }
+            }
             if let Some(inventory) = &inventory {
+                let missing_sections = inventory
+                    .entries
+                    .values()
+                    .flat_map(|mirror| {
+                        crate::goal::missing_required_sections(&mirror.entry)
+                            .into_iter()
+                            .map(|section| format!("{} missing {section}", mirror.entry.display_id))
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>();
+                if missing_sections.is_empty() {
+                    checks.push(DoctorCheck {
+                        name: "Goal sections".to_owned(),
+                        status: "ok",
+                        detail: "all goals have required sections".to_owned(),
+                    });
+                } else {
+                    checks.push(DoctorCheck {
+                        name: "Goal sections".to_owned(),
+                        status: "drift",
+                        detail: missing_sections.join("; "),
+                    });
+                }
                 match inspect_drift(&connection, &database_path, inventory) {
                     Ok(details) if details.is_empty() => checks.push(DoctorCheck {
                         name: "SQLite/Markdown drift".to_owned(),
