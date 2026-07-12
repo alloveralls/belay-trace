@@ -23,7 +23,21 @@ directories, and generated agent integration templates. It does not modify
 belay init --update-agents
 belay init --install-skill codex
 belay init --install-skill claude
+belay init --install-skill codex --install-skill claude
 ```
+
+`--install-skill` is repeatable so repositories using both agents can activate
+both integrations explicitly in one command. If a copied template may contain
+local SQLite state, rebuild that ignored state from tracked Markdown rather
+than trusting or deleting it in place:
+
+```sh
+belay init --reset-state
+```
+
+The reset is an atomic rebuild from `.belay/entries/`; it does not delete the
+tracked Markdown source. Template archives and copy scripts should exclude
+`.belay/state/` entirely.
 
 For repositories that use belay as their trace system, keep the recommended
 project instructions in the repository root `AGENTS.md`. The root file should
@@ -238,3 +252,7 @@ The managed Markdown entries are the tracked review and recovery surface.
 The root `AGENTS.md` is the recommended place for repository-specific agent
 workflow policy; `.belay/agent/AGENTS.md.snippet` is the generated integration
 snippet used by `belay init --update-agents`.
+
+Use `docs/` for durable system documentation. Keep intent, approval, trade-off
+history, execution notes, reviews, and evidence in belay entries, linking to
+the durable document instead of maintaining two copies of the same truth.

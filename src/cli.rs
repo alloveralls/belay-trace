@@ -52,7 +52,8 @@ const INIT_AFTER_HELP: &str = r#"Behavior and Side Effects:
   Creates or completes .belay/config.toml, managed entry directories, local SQLite
   state, .belay/.gitignore, and deterministic agent integration templates. Managed
   generated templates are refreshed. AGENTS.md and agent skills are modified only
-  by the explicit --update-agents and --install-skill options.
+  by the explicit --update-agents and --install-skill options. --reset-state
+  atomically rebuilds ignored SQLite state from tracked Markdown.
 
 Examples:
   cd /path/to/repository
@@ -60,6 +61,8 @@ Examples:
   belay init --update-agents
   belay init --install-skill codex
   belay init --install-skill claude
+  belay init --install-skill codex --install-skill claude
+  belay init --reset-state
 
 Exit Status:
   0  Repository initialized or already complete
@@ -438,9 +441,13 @@ struct InitArgs {
     #[arg(long)]
     update_agents: bool,
 
-    /// Install a generated agent skill into an explicit repository-scoped target.
-    #[arg(long, value_enum, value_name = "TARGET")]
-    install_skill: Option<SkillTarget>,
+    /// Install generated agent skills into explicit repository-scoped targets. Repeat for multiple targets.
+    #[arg(long, value_enum, value_name = "TARGET", action = clap::ArgAction::Append)]
+    install_skill: Vec<SkillTarget>,
+
+    /// Atomically rebuild local SQLite state from tracked Markdown after initialization.
+    #[arg(long)]
+    reset_state: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -761,7 +768,11 @@ fn execute(cli: Cli, current_dir: &Path) -> Result<(), BelayError> {
                     activation.path.display()
                 );
             }
-            if let Some(target) = arguments.install_skill {
+            if arguments.reset_state {
+                let count = reconcile::rebuild(&outcome.repository)?;
+                println!("Rebuilt local state from {count} Markdown entries");
+            }
+            for target in arguments.install_skill {
                 let (name, activation) = match target {
                     SkillTarget::Codex => {
                         ("Codex", agent::install_codex_skill(&outcome.repository)?)

@@ -126,8 +126,12 @@ fn init_is_idempotent_and_does_not_modify_agents_md() {
     let claude_skill = fs::read_to_string(temporary.path().join(".belay/agent/claude/SKILL.md"))
         .expect("read generated Claude skill");
     assert!(snippet.contains("Never overwrite an unresolved sync conflict"));
+    assert!(snippet.contains("Tier 1 (small, reversible changes)"));
+    assert!(snippet.contains("Independent review requires context separation"));
+    assert!(snippet.contains("--kind human-approval"));
     assert!(skill.contains("Repository-specific policy belongs"));
-    assert!(claude_skill.contains("repository `CLAUDE.md`"));
+    assert!(claude_skill.contains("`CLAUDE.md`"));
+    assert_eq!(skill, claude_skill);
 }
 
 #[test]
@@ -316,6 +320,82 @@ fn install_claude_skill_is_explicit_repository_scoped_and_idempotent() {
             .expect("stdout is UTF-8")
             .contains("Claude skill unchanged")
     );
+}
+
+#[test]
+fn install_skill_option_is_repeatable_for_multiple_explicit_targets() {
+    let temporary = tempdir().expect("create temp directory");
+    fs::create_dir(temporary.path().join(".git")).expect("create repository marker");
+
+    let installed = belay()
+        .args([
+            "init",
+            "--install-skill",
+            "codex",
+            "--install-skill",
+            "claude",
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("install both skills");
+    assert!(installed.status.success(), "{installed:?}");
+    assert!(
+        temporary
+            .path()
+            .join(".agents/skills/belay-trace/SKILL.md")
+            .is_file()
+    );
+    assert!(
+        temporary
+            .path()
+            .join(".claude/skills/belay-trace/SKILL.md")
+            .is_file()
+    );
+}
+
+#[test]
+fn init_reset_state_atomically_rebuilds_from_tracked_markdown() {
+    let temporary = initialize_repository();
+    let added = belay()
+        .args([
+            "add",
+            "note",
+            "--title",
+            "Local-only ghost",
+            "--body",
+            "temporary",
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("add note");
+    assert!(added.status.success(), "{added:?}");
+
+    let note_path = fs::read_dir(temporary.path().join(".belay/entries/notes"))
+        .expect("read notes")
+        .next()
+        .expect("created note")
+        .expect("read note path")
+        .path();
+    fs::remove_file(note_path).expect("remove tracked mirror");
+
+    let reset = belay()
+        .args(["init", "--reset-state"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("reset local state");
+    assert!(reset.status.success(), "{reset:?}");
+    assert!(
+        String::from_utf8(reset.stdout)
+            .expect("stdout is UTF-8")
+            .contains("Rebuilt local state from 0 Markdown entries")
+    );
+
+    let database = Connection::open(temporary.path().join(".belay/state/belay.sqlite"))
+        .expect("open rebuilt database");
+    let count: i64 = database
+        .query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))
+        .expect("count rebuilt entries");
+    assert_eq!(count, 0);
 }
 
 #[test]

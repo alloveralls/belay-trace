@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - README.md
+      - "docs/**/*.md"
+      - ".belay/entries/**/*.md"
+      - ".belay/agent/**/*.md"
       - ".github/*.md"
       - ".github/**/*.md"
       - ".github/.markdownlint.json"
@@ -12,6 +15,9 @@ on:
   push:
     paths:
       - README.md
+      - "docs/**/*.md"
+      - ".belay/entries/**/*.md"
+      - ".belay/agent/**/*.md"
       - ".github/*.md"
       - ".github/**/*.md"
       - ".github/.markdownlint.json"
@@ -30,6 +36,9 @@ jobs:
           config: .github/.markdownlint.json
           globs: |
             README.md
+            docs/**/*.md
+            .belay/entries/**/*.md
+            .belay/agent/**/*.md
             .github/*.md
             .github/**/*.md
 
@@ -50,6 +59,9 @@ jobs:
             --retry-wait-time 2
             --max-retries 2
             README.md
+            docs/**/*.md
+            .belay/entries/**/*.md
+            .belay/agent/**/*.md
             .github/*.md
             .github/**/*.md
 
@@ -64,4 +76,7 @@ jobs:
           config: .github/.typos.toml
           files: |
             README.md
+            docs/**/*.md
+            .belay/entries/**/*.md
+            .belay/agent/**/*.md
             .github/*.md
