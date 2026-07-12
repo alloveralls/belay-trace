@@ -35,6 +35,18 @@ than trusting or deleting it in place:
 belay init --reset-state
 ```
 
+To update one or more existing projects from this checkout, use:
+
+```sh
+./scripts/update-existing-project.sh ~/src/project-a ~/src/project-b
+```
+
+The script builds the release binary, refreshes generated assets, preserves
+which AGENTS/Codex/Claude integrations are currently active, and runs
+`belay doctor`. It refuses to initialize an unrelated directory unless
+`--initialize` is passed. Use `--help` for explicit activation and state-reset
+options, or `--belay /path/to/belay` to skip the release build.
+
 The reset is an atomic rebuild from `.belay/entries/`; it does not delete the
 tracked Markdown source. Template archives and copy scripts should exclude
 `.belay/state/` entirely.

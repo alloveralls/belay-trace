@@ -5,8 +5,8 @@ type: plan
 title: Deliver Phase 6 assurance incrementally
 status: draft
 created_at: 2026-07-12T16:40:00+09:00
-updated_at: 2026-07-12T16:40:43+09:00
-revision: 3
+updated_at: 2026-07-12T17:30:24+09:00
+revision: 5
 tags: []
 links:
 - relation: fulfills
@@ -55,7 +55,7 @@ metadata: {}
 | ID | Goal item | Outcome / Task | Actor | State | Verification / Evidence |
 | --- | --- | --- | --- | --- | --- |
 | T-1 | SC-1 | Specify Intent Brief and Delivery Map conventions | AI + Human | implemented | human review pending; `docs/design/phase6.md` |
-| T-2 | SC-1..SC-4 | Build Agent-first MVP integration | AI | not-started | integration tests + dogfooding |
+| T-2 | SC-1..SC-4 | Build Agent-first MVP integration | AI | implemented | `cargo test`: 90 passed on working copy; fresh commit Evidence and fresh-context review pending; WRK-20260712T165103-001-implement-phase-6-1-agent-first-delivery-assuran; WRK-20260712T172930-001-add-updater-for-existing-belay-projects |
 | T-3 | SC-1..SC-4 | Dogfood five Tier 2 or Tier 3 tasks | AI + Human | not-started | recorded findings |
 | T-4 | SC-2..SC-4 | Add deterministic Plan lint if justified | AI | not-started | unit and CLI tests |
 | T-5 | SC-3..SC-4 | Add reconciliation report if justified | AI | not-started | fresh-session handoff test |

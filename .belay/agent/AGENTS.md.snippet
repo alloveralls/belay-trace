@@ -5,9 +5,19 @@
 ### Workflow tiers
 
 - Tier 1 (small, reversible changes): a direct user instruction is sufficient approval. Keep the change focused; a separate Plan, Decision, and Review entry is optional.
-- Tier 2 (features and non-trivial changes): create or update a Goal/Plan before implementation, record Work, and review the completed diff in a fresh context.
-- Tier 3 (architecture, API contracts, security, migrations, or irreversible operations): require explicit human approval, record material Decisions, and use an independent reviewer in a fresh context. Prefer cross-model review when its added cost is justified by the risk.
+- Tier 2 (features and non-trivial changes): create or update a Goal/Plan before implementation. The Plan must contain an Intent Brief and Delivery Map; give the human an opportunity to correct the Brief before implementation. Record Work and review the completed diff in a fresh context.
+- Tier 3 (architecture, API contracts, security, migrations, or irreversible operations): use the Tier 2 trace plus explicit human approval of the Intent Brief and Plan before implementation. Record material Decisions and use an independent reviewer in a fresh context. Prefer cross-model review when its added cost is justified by the risk.
 - Escalate a change to the higher tier whenever scope, reversibility, or risk is uncertain. Do not create trace entries that add no durable decision, evidence, or retrieval value.
+
+### Delivery assurance for Tier 2 and Tier 3
+
+- Frame intent in the Plan before implementation with these non-empty Intent Brief sections: Problem, Desired Outcome, Success Signals, Constraints, Non-goals, Assumptions, and Unknowns / Decisions Needed. Write `None identified` when a section has no items.
+- Label uncertain statements as assumptions or unknowns. Ask about decisions that materially change the outcome, security, data loss, external commitments, or irreversible work; proceed with explicitly recorded, small, reversible assumptions.
+- Map every Goal Success Criterion to observable outcome and verification tasks in a Delivery Map. Keep Task IDs stable and use only `not-started`, `in-progress`, `blocked`, `implemented`, `verified`, or `dropped`.
+- Treat `implemented` and `verified` as different states. Passing Evidence is required for `verified`; a code change or test definition alone is not verification. Preserve the reason and approval source for every `dropped` task.
+- Reconcile the Intent Brief, Goal, Delivery Map, actual diff, and Evidence after a meaningful task, a discovered requirement or risk, a scope or design change, before interruption or handoff, when asked for status, and before declaring completion.
+- At each reconciliation, report: Current state counts; Goal coverage; Changed assumptions; Human decisions needed; Next action. Update the Delivery Map instead of reporting a state that it does not contain.
+- Before completion, use a fresh context to check every Success Criterion has a task and valid Evidence, no blocked or implemented-only item is treated as complete, the diff respects Constraints and Non-goals, and changed scope or dropped tasks have approval. Record human acceptance for the final outcome.
 
 ### Trace and approval
 

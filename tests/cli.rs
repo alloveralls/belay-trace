@@ -13,6 +13,15 @@ fn belay() -> Command {
     Command::new(env!("CARGO_BIN_EXE_belay"))
 }
 
+fn update_existing_project_script() -> Command {
+    let mut command = Command::new("sh");
+    command.arg(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/scripts/update-existing-project.sh"
+    ));
+    command
+}
+
 #[test]
 fn top_level_help_describes_commands_workflow_and_exit_categories() {
     let output = belay().arg("--help").output().expect("run belay --help");
@@ -129,7 +138,19 @@ fn init_is_idempotent_and_does_not_modify_agents_md() {
     assert!(snippet.contains("Tier 1 (small, reversible changes)"));
     assert!(snippet.contains("Independent review requires context separation"));
     assert!(snippet.contains("--kind human-approval"));
+    assert!(snippet.contains("Delivery assurance for Tier 2 and Tier 3"));
+    assert!(snippet.contains("Problem, Desired Outcome, Success Signals"));
+    assert!(snippet.contains("Treat `implemented` and `verified` as different states"));
+    assert!(snippet.contains("Current state counts; Goal coverage"));
+    assert!(snippet.contains("Before completion, use a fresh context"));
     assert!(skill.contains("Repository-specific policy belongs"));
+    assert!(skill.contains("Use for Tier 2 or Tier 3 coding work"));
+    assert!(skill.contains("## Frame"));
+    assert!(skill.contains("## Map"));
+    assert!(skill.contains("## Execute"));
+    assert!(skill.contains("## Assure completion"));
+    assert!(skill.contains("implemented, unverified"));
+    assert!(skill.contains("None identified"));
     assert!(claude_skill.contains("`CLAUDE.md`"));
     assert_eq!(skill, claude_skill);
 }
@@ -168,6 +189,74 @@ fn repeated_init_refreshes_generated_assets_without_activating_them() {
     );
     assert!(!temporary.path().join("AGENTS.md").exists());
     assert!(!temporary.path().join(".agents").exists());
+}
+
+#[test]
+fn update_script_refreshes_only_previously_active_integrations() {
+    let temporary = tempdir().expect("create temp directory");
+    fs::create_dir(temporary.path().join(".git")).expect("create repository marker");
+    fs::write(temporary.path().join("AGENTS.md"), "# Project policy\n")
+        .expect("write project policy");
+
+    let initialized = belay()
+        .args(["init", "--update-agents", "--install-skill", "codex"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("initialize integrations");
+    assert!(initialized.status.success(), "{initialized:?}");
+
+    fs::write(
+        temporary.path().join(".belay/agent/AGENTS.md.snippet"),
+        "stale generated snippet\n",
+    )
+    .expect("stale generated snippet");
+    fs::write(
+        temporary.path().join(".agents/skills/belay-trace/SKILL.md"),
+        "stale installed skill\n",
+    )
+    .expect("stale installed skill");
+
+    let updated = update_existing_project_script()
+        .args(["--belay", env!("CARGO_BIN_EXE_belay")])
+        .arg(temporary.path())
+        .output()
+        .expect("update existing project");
+    assert!(updated.status.success(), "{updated:?}");
+
+    let generated_snippet =
+        fs::read_to_string(temporary.path().join(".belay/agent/AGENTS.md.snippet"))
+            .expect("read generated snippet");
+    let agents = fs::read_to_string(temporary.path().join("AGENTS.md")).expect("read AGENTS.md");
+    assert!(generated_snippet.contains("Delivery assurance for Tier 2 and Tier 3"));
+    assert!(agents.starts_with("# Project policy\n"));
+    assert!(agents.contains("Delivery assurance for Tier 2 and Tier 3"));
+
+    let generated_codex = fs::read_to_string(temporary.path().join(".belay/agent/codex/SKILL.md"))
+        .expect("read generated Codex skill");
+    let installed_codex =
+        fs::read_to_string(temporary.path().join(".agents/skills/belay-trace/SKILL.md"))
+            .expect("read installed Codex skill");
+    assert_eq!(installed_codex, generated_codex);
+    assert!(
+        !temporary
+            .path()
+            .join(".claude/skills/belay-trace/SKILL.md")
+            .exists()
+    );
+}
+
+#[test]
+fn update_script_refuses_to_initialize_without_explicit_opt_in() {
+    let temporary = tempdir().expect("create temp directory");
+    fs::create_dir(temporary.path().join(".git")).expect("create repository marker");
+
+    let rejected = update_existing_project_script()
+        .args(["--belay", env!("CARGO_BIN_EXE_belay")])
+        .arg(temporary.path())
+        .output()
+        .expect("reject uninitialized project");
+    assert_eq!(rejected.status.code(), Some(2));
+    assert!(!temporary.path().join(".belay").exists());
 }
 
 #[test]
