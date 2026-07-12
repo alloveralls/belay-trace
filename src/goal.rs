@@ -114,11 +114,11 @@ pub fn render_lint(
                     report.checklist_passed, report.checklist_total
                 ));
                 if score {
-                    let value = if report.checklist_total == 0 {
-                        100
-                    } else {
-                        report.checklist_passed * 100 / report.checklist_total
-                    };
+                    let value = report
+                        .checklist_passed
+                        .checked_mul(100)
+                        .and_then(|value| value.checked_div(report.checklist_total))
+                        .unwrap_or(100);
                     output.push_str(&format!("Goal Score: {value}/100\n"));
                 }
                 if report.findings.is_empty() {

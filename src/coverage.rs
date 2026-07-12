@@ -459,11 +459,10 @@ fn ratio(covered: usize, total: usize) -> CoverageRatio {
     CoverageRatio {
         covered,
         total,
-        percent: if total == 0 {
-            100
-        } else {
-            covered * 100 / total
-        },
+        percent: covered
+            .checked_mul(100)
+            .and_then(|value| value.checked_div(total))
+            .unwrap_or(100),
     }
 }
 

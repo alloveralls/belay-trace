@@ -413,7 +413,7 @@ fn load_candidates(
             .collect::<Vec<_>>();
         let mut seen = BTreeSet::new();
         evidence.retain(|unit| seen.insert((unit.section.clone(), unit.text.clone())));
-        evidence.sort_by_key(|unit| evidence_priority(&result, unit, &terms, primary));
+        evidence.sort_by_key(|unit| evidence_priority(&result, unit, terms, primary));
         candidates.push(Candidate { result, evidence });
     }
     Ok(candidates)
