@@ -1183,7 +1183,7 @@ fn search_supports_exact_id_structured_filters_and_bm25_deduplication() {
 }
 
 #[test]
-fn search_automatically_migrates_a_schema_v1_repository() {
+fn search_rejects_non_contiguous_migration_history() {
     let temporary = initialize_repository();
     let decision = created_id(
         &belay()
@@ -1230,11 +1230,13 @@ fn search_automatically_migrates_a_schema_v1_repository() {
         .current_dir(temporary.path())
         .output()
         .expect("search and migrate");
-    assert!(output.status.success(), "{output:?}");
+    assert!(!output.status.success(), "{output:?}");
     assert!(
-        String::from_utf8(output.stdout)
-            .expect("search stdout")
-            .contains(&decision)
+        String::from_utf8(output.stderr)
+            .expect("search stderr")
+            .contains(
+                "migration history is inconsistent: version 2 is missing while version 3 is recorded"
+            )
     );
 
     let connection = Connection::open(database_path).expect("reopen DB");
@@ -1251,11 +1253,12 @@ fn search_automatically_migrates_a_schema_v1_repository() {
         )
         .expect("read FTS schema");
     assert_eq!(version, 3);
-    assert!(fts_sql.contains("chunk_ordinal UNINDEXED"));
+    assert!(!fts_sql.contains("chunk_ordinal UNINDEXED"));
+    assert!(!decision.is_empty());
 }
 
 #[test]
-fn concurrent_searches_serialize_a_schema_v1_migration() {
+fn concurrent_searches_reject_non_contiguous_migration_history() {
     let temporary = initialize_repository();
     let decision = created_id(
         &belay()
@@ -1313,11 +1316,13 @@ fn concurrent_searches_serialize_a_schema_v1_migration() {
         let output = child
             .wait_with_output()
             .expect("wait for concurrent search");
-        assert!(output.status.success(), "{output:?}");
+        assert!(!output.status.success(), "{output:?}");
         assert!(
-            String::from_utf8(output.stdout)
-                .expect("search stdout")
-                .contains(&decision)
+            String::from_utf8(output.stderr)
+                .expect("search stderr")
+                .contains(
+                    "migration history is inconsistent: version 2 is missing while version 3 is recorded"
+                )
         );
     }
 
@@ -1329,7 +1334,8 @@ fn concurrent_searches_serialize_a_schema_v1_migration() {
             |row| row.get(0),
         )
         .expect("count migration rows");
-    assert_eq!(migration_count, 1);
+    assert_eq!(migration_count, 0);
+    assert!(!decision.is_empty());
 }
 
 #[test]
