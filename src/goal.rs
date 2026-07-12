@@ -6,7 +6,6 @@ use serde::Serialize;
 use crate::context::{self, ContextFormat};
 use crate::entry::{Entry, EntryStatus, EntryType, LinkRelation, parse_display_id};
 use crate::error::BelayError;
-use crate::markdown;
 use crate::repository::Repository;
 use crate::store;
 

@@ -340,7 +340,7 @@ fn has_evidence_kind(
 fn has_fresh_pass(
     repository: &Repository,
     connection: &Connection,
-    database_path: &std::path::Path,
+    _database_path: &std::path::Path,
     head: Option<&str>,
     target: &str,
     kinds: Option<&[&str]>,

@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::entry::{EntryStatus, EntryType, parse_display_id, parse_entry_reference_id};
+use crate::entry::parse_entry_reference_id;
 use crate::error::BelayError;
 use crate::repository::Repository;
 
