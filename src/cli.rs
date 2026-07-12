@@ -1148,6 +1148,9 @@ fn read_body(arguments: &AddArgs, entry_type: EntryType) -> Result<String, Belay
 
 fn parse_context_task(values: &[String]) -> Result<(bool, &str), BelayError> {
     match values {
+        [command] if command == "compile" => Err(BelayError::Validation {
+            message: "context compile requires a task".to_owned(),
+        }),
         [task] => Ok((false, task.as_str())),
         [command, task] if command == "compile" => Ok((true, task.as_str())),
         [command, _] => Err(BelayError::Validation {

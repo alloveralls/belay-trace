@@ -584,7 +584,6 @@ fn distribute_remaining_budget(
             selected[rank].1.push(unit.clone());
             used += unit_tokens;
         }
-        carry = share.saturating_sub(used);
         while rendered_tokens(format, header, candidates, selected) > selection_budget {
             if selected[rank].1.len() == 1 {
                 let current = selected[rank].1[0].text.clone();
@@ -598,6 +597,14 @@ fn distribute_remaining_budget(
             }
             selected[rank].1.pop();
         }
+        used = estimate_tokens(&selected[rank].1[0].text).saturating_sub(current_first_tokens)
+            + selected[rank]
+                .1
+                .iter()
+                .skip(1)
+                .map(|unit| estimate_tokens(&unit.text))
+                .sum::<usize>();
+        carry = share.saturating_sub(used);
     }
 }
 

@@ -295,29 +295,7 @@ pub fn stale_doctor_details(
         .map_err(|source| BelayError::sqlite(database_path, source))?;
     let mut details = Vec::new();
     for (display_id, entry_type, status) in entries {
-        let fresh_pass: Option<i64> = connection
-            .query_row(
-                "
-                SELECT evidence.id
-                FROM evidence_links links
-                JOIN evidence ON evidence.id = links.evidence_id
-                WHERE links.target = ?1 AND links.relation = 'verifies'
-                  AND evidence.verdict = 'pass'
-                ORDER BY evidence.captured_at DESC
-                LIMIT 1
-                ",
-                [display_id.as_str()],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|source| BelayError::sqlite(database_path, source))?;
-        if fresh_pass.is_none() {
-            details.push(format!(
-                "{display_id} ({entry_type}/{status}) has no fresh passing evidence"
-            ));
-            continue;
-        }
-        let stale_only: Option<String> = connection
+        let passing_commit: Option<String> = connection
             .query_row(
                 "
                 SELECT evidence.commit_sha
@@ -333,12 +311,20 @@ pub fn stale_doctor_details(
             )
             .optional()
             .map_err(|source| BelayError::sqlite(database_path, source))?;
-        if let Some(commit) = stale_only {
-            if !freshness(repository, head.as_deref(), &commit).is_fresh() {
-                details.push(format!(
-                    "{display_id} ({entry_type}/{status}) depends on stale evidence"
-                ));
-            }
+        let Some(commit) = passing_commit else {
+            details.push(format!(
+                "{display_id} ({entry_type}/{status}) has no passing evidence"
+            ));
+            continue;
+        };
+        match freshness(repository, head.as_deref(), &commit) {
+            Freshness::Fresh => {}
+            Freshness::Stale(reason) => details.push(format!(
+                "{display_id} ({entry_type}/{status}) depends on stale evidence ({reason})"
+            )),
+            Freshness::Unknown(reason) => details.push(format!(
+                "{display_id} ({entry_type}/{status}) has passing evidence with unknown freshness ({reason})"
+            )),
         }
     }
     Ok(details)

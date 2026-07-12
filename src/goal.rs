@@ -276,7 +276,12 @@ pub fn lint_entry(
     }
 
     total += terms.len().min(1);
-    let passed = total.saturating_sub(findings.len());
+    let failed = findings
+        .iter()
+        .filter(|finding| finding.layer != "lexicon")
+        .count()
+        + usize::from(findings.iter().any(|finding| finding.layer == "lexicon"));
+    let passed = total.saturating_sub(failed);
     Ok(GoalLintReport {
         goal_id: goal.display_id.clone(),
         checklist_passed: passed,
