@@ -5,7 +5,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, pa
 
 use crate::error::BelayError;
 
-pub const LATEST_SCHEMA_VERSION: i64 = 2;
+pub const LATEST_SCHEMA_VERSION: i64 = 3;
 
 const MIGRATION_1: &str = r#"
 CREATE TABLE entries (
@@ -112,6 +112,50 @@ WHERE NOT EXISTS (
 );
 "#;
 
+const MIGRATION_3: &str = r#"
+CREATE TABLE entry_links_new (
+    from_entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+    to_entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+    to_fragment TEXT NOT NULL DEFAULT '',
+    relation TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (from_entry_id, to_entry_id, to_fragment, relation)
+);
+
+INSERT INTO entry_links_new(from_entry_id, to_entry_id, to_fragment, relation, metadata_json)
+SELECT from_entry_id, to_entry_id, '', relation, metadata_json
+FROM entry_links;
+
+DROP TABLE entry_links;
+ALTER TABLE entry_links_new RENAME TO entry_links;
+CREATE INDEX idx_entry_links_to ON entry_links(to_entry_id, relation);
+
+CREATE TABLE evidence (
+    id INTEGER PRIMARY KEY,
+    display_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    verdict TEXT NOT NULL,
+    commit_sha TEXT NOT NULL,
+    captured_at TEXT NOT NULL,
+    source TEXT NOT NULL,
+    issuer TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    detail_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE UNIQUE INDEX idx_evidence_display_id ON evidence(display_id);
+CREATE INDEX idx_evidence_commit ON evidence(commit_sha);
+
+CREATE TABLE evidence_links (
+    evidence_id INTEGER NOT NULL REFERENCES evidence(id) ON DELETE CASCADE,
+    target TEXT NOT NULL,
+    relation TEXT NOT NULL,
+    PRIMARY KEY (evidence_id, target, relation)
+);
+
+CREATE INDEX idx_evidence_links_target ON evidence_links(target, relation);
+"#;
+
 pub fn initialize(path: &Path) -> Result<(), BelayError> {
     let mut connection =
         Connection::open(path).map_err(|source| BelayError::sqlite(path, source))?;
@@ -132,7 +176,10 @@ pub fn open_read_only(path: &Path) -> Result<Connection, BelayError> {
     let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|source| BelayError::sqlite(path, source))?;
     configure(&connection, path)?;
-    let current = schema_version(&connection, path)?.unwrap_or(0);
+    let current = match schema_version(&connection, path)? {
+        Some(_) => validate_migration_history(&connection, path)?,
+        None => 0,
+    };
     validate_supported_version(current)?;
     if current != LATEST_SCHEMA_VERSION {
         return Err(BelayError::Validation {
@@ -178,12 +225,17 @@ pub fn verify_schema_health(connection: &Connection, path: &Path) -> Result<(), 
         ("table", "entry_links"),
         ("table", "entry_chunks"),
         ("table", "entry_fts"),
+        ("table", "evidence"),
+        ("table", "evidence_links"),
         ("table", "sync_state"),
         ("table", "agent_integrations"),
         ("index", "idx_entries_display_id"),
         ("index", "idx_entries_type_status"),
         ("index", "idx_entry_links_to"),
         ("index", "idx_entry_chunks_entry"),
+        ("index", "idx_evidence_display_id"),
+        ("index", "idx_evidence_commit"),
+        ("index", "idx_evidence_links_target"),
         ("index", "idx_sync_state_source_path"),
     ] {
         let present = connection
@@ -284,6 +336,7 @@ pub fn verify_fts5(connection: &Connection) -> Result<(), BelayError> {
 pub fn migrate(connection: &mut Connection, path: &Path) -> Result<(), BelayError> {
     if let Some(current_version) = schema_version(connection, path)? {
         validate_supported_version(current_version)?;
+        validate_migration_history(connection, path)?;
         if current_version == LATEST_SCHEMA_VERSION {
             return Ok(());
         }
@@ -304,14 +357,7 @@ pub fn migrate(connection: &mut Connection, path: &Path) -> Result<(), BelayErro
         )
         .map_err(|source| BelayError::sqlite(path, source))?;
 
-    let current_version: i64 = transaction
-        .query_row(
-            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|source| BelayError::sqlite(path, source))?;
-
+    let current_version = validate_migration_history(&transaction, path)?;
     validate_supported_version(current_version)?;
 
     if current_version < 1 {
@@ -344,9 +390,49 @@ pub fn migrate(connection: &mut Connection, path: &Path) -> Result<(), BelayErro
             .map_err(|source| BelayError::sqlite(path, source))?;
     }
 
+    if current_version < 3 {
+        transaction
+            .execute_batch(MIGRATION_3)
+            .map_err(|source| BelayError::sqlite(path, source))?;
+        transaction
+            .execute(
+                "
+                INSERT INTO schema_migrations(version, name, applied_at)
+                VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                ",
+                params![3, "add goals, link fragments, and evidence"],
+            )
+            .map_err(|source| BelayError::sqlite(path, source))?;
+    }
+
     transaction
         .commit()
         .map_err(|source| BelayError::sqlite(path, source))
+}
+
+fn validate_migration_history(connection: &Connection, path: &Path) -> Result<i64, BelayError> {
+    let mut statement = connection
+        .prepare("SELECT version FROM schema_migrations ORDER BY version")
+        .map_err(|source| BelayError::sqlite(path, source))?;
+    let versions = statement
+        .query_map([], |row| row.get::<_, i64>(0))
+        .map_err(|source| BelayError::sqlite(path, source))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|source| BelayError::sqlite(path, source))?;
+
+    for (index, version) in versions.iter().enumerate() {
+        let expected = index as i64 + 1;
+        if *version != expected {
+            let current = versions.last().copied().unwrap_or(0);
+            return Err(BelayError::Validation {
+                message: format!(
+                    "migration history is inconsistent: version {expected} is missing while version {current} is recorded"
+                ),
+            });
+        }
+    }
+
+    Ok(versions.last().copied().unwrap_or(0))
 }
 
 fn schema_version(connection: &Connection, path: &Path) -> Result<Option<i64>, BelayError> {
@@ -409,7 +495,7 @@ mod tests {
                 row.get(0)
             })
             .expect("count migrations");
-        assert_eq!(migration_count, 2);
+        assert_eq!(migration_count, LATEST_SCHEMA_VERSION);
 
         let entries_sql: String = connection
             .query_row(
@@ -442,6 +528,32 @@ mod tests {
             )
             .expect("read FTS schema");
         assert!(fts_sql.contains("chunk_ordinal UNINDEXED"));
+    }
+
+    #[test]
+    fn migration_rejects_non_contiguous_history_without_rerunning_ddl() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory SQLite");
+        configure(&connection, Path::new(":memory:")).expect("configure SQLite");
+        migrate(&mut connection, Path::new(":memory:")).expect("initial migration");
+        connection
+            .execute("DELETE FROM schema_migrations WHERE version = 2", [])
+            .expect("remove migration record");
+
+        let error = migrate(&mut connection, Path::new(":memory:"))
+            .expect_err("migration history gap should be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "migration history is inconsistent: version 2 is missing while version 3 is recorded"
+        );
+        let entries_exist: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'entries'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("inspect schema after rejection");
+        assert_eq!(entries_exist, 1);
     }
 
     #[test]

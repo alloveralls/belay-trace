@@ -17,6 +17,7 @@ pub const MAX_SEQUENCE: u16 = 999;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EntryType {
+    Goal,
     Plan,
     Decision,
     Work,
@@ -25,7 +26,8 @@ pub enum EntryType {
 }
 
 impl EntryType {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
+        Self::Goal,
         Self::Plan,
         Self::Decision,
         Self::Work,
@@ -35,6 +37,7 @@ impl EntryType {
 
     pub const fn prefix(self) -> &'static str {
         match self {
+            Self::Goal => "GOAL",
             Self::Plan => "PLN",
             Self::Decision => "DEC",
             Self::Work => "WRK",
@@ -45,6 +48,7 @@ impl EntryType {
 
     pub const fn directory(self) -> &'static str {
         match self {
+            Self::Goal => "goals",
             Self::Plan => "plans",
             Self::Decision => "decisions",
             Self::Work => "work",
@@ -55,6 +59,7 @@ impl EntryType {
 
     pub const fn default_status(self) -> EntryStatus {
         match self {
+            Self::Goal => EntryStatus::Draft,
             Self::Plan => EntryStatus::Draft,
             Self::Decision => EntryStatus::Proposed,
             Self::Work => EntryStatus::InProgress,
@@ -65,6 +70,14 @@ impl EntryType {
 
     pub const fn allows_status(self, status: EntryStatus) -> bool {
         match self {
+            Self::Goal => matches!(
+                status,
+                EntryStatus::Draft
+                    | EntryStatus::Active
+                    | EntryStatus::Completed
+                    | EntryStatus::Superseded
+                    | EntryStatus::Abandoned
+            ),
             Self::Plan => matches!(
                 status,
                 EntryStatus::Draft
@@ -97,6 +110,7 @@ impl EntryType {
 impl fmt::Display for EntryType {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::Goal => "goal",
             Self::Plan => "plan",
             Self::Decision => "decision",
             Self::Work => "work",
@@ -111,6 +125,7 @@ impl FromStr for EntryType {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
+            "goal" => Ok(Self::Goal),
             "plan" => Ok(Self::Plan),
             "decision" => Ok(Self::Decision),
             "work" => Ok(Self::Work),
@@ -118,7 +133,7 @@ impl FromStr for EntryType {
             "note" => Ok(Self::Note),
             _ => Err(BelayError::Validation {
                 message: format!(
-                    "unsupported entry type {value:?}; expected plan, decision, work, review, or note"
+                    "unsupported entry type {value:?}; expected goal, plan, decision, work, review, or note"
                 ),
             }),
         }
@@ -196,6 +211,10 @@ pub enum LinkRelation {
     Reviews,
     Supersedes,
     FollowsUp,
+    Fulfills,
+    Supports,
+    Verifies,
+    Refutes,
 }
 
 impl fmt::Display for LinkRelation {
@@ -206,6 +225,10 @@ impl fmt::Display for LinkRelation {
             Self::Reviews => "reviews",
             Self::Supersedes => "supersedes",
             Self::FollowsUp => "follows-up",
+            Self::Fulfills => "fulfills",
+            Self::Supports => "supports",
+            Self::Verifies => "verifies",
+            Self::Refutes => "refutes",
         })
     }
 }
@@ -220,8 +243,12 @@ impl FromStr for LinkRelation {
             "reviews" => Ok(Self::Reviews),
             "supersedes" => Ok(Self::Supersedes),
             "follows-up" => Ok(Self::FollowsUp),
+            "fulfills" => Ok(Self::Fulfills),
+            "supports" => Ok(Self::Supports),
+            "verifies" => Ok(Self::Verifies),
+            "refutes" => Ok(Self::Refutes),
             _ => validation(format!(
-                "unsupported link relation {value:?}; expected references, implements, reviews, supersedes, or follows-up"
+                "unsupported link relation {value:?}; expected references, implements, reviews, supersedes, follows-up, fulfills, supports, verifies, or refutes"
             )),
         }
     }
@@ -323,8 +350,8 @@ impl Entry {
 
         let mut links = BTreeSet::new();
         for link in &self.links {
-            parse_display_id(&link.id)?;
-            if link.id == self.display_id {
+            let reference = parse_entry_reference_id(&link.id)?;
+            if reference.display_id == self.display_id {
                 return validation("entry links must not target the same display ID");
             }
             if !links.insert((link.relation, link.id.as_str())) {
@@ -342,6 +369,12 @@ pub struct DisplayIdParts {
     pub timestamp: String,
     pub sequence: u16,
     pub slug: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryReferenceParts {
+    pub display_id: String,
+    pub fragment: Option<String>,
 }
 
 pub struct ImmediateTransaction<'connection> {
@@ -386,6 +419,7 @@ pub fn parse_display_id(display_id: &str) -> Result<DisplayIdParts, BelayError> 
     let slug = parts.next().unwrap_or_default();
 
     let entry_type = match prefix {
+        "GOAL" => EntryType::Goal,
         "PLN" => EntryType::Plan,
         "DEC" => EntryType::Decision,
         "WRK" => EntryType::Work,
@@ -409,6 +443,31 @@ pub fn parse_display_id(display_id: &str) -> Result<DisplayIdParts, BelayError> 
         timestamp: timestamp.to_owned(),
         sequence: sequence_value,
         slug: slug.to_owned(),
+    })
+}
+
+pub fn parse_entry_reference_id(value: &str) -> Result<EntryReferenceParts, BelayError> {
+    let (display_id, fragment) = match value.split_once('#') {
+        Some((display_id, fragment)) => {
+            if fragment.is_empty()
+                || !fragment
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
+            {
+                return Err(BelayError::Validation {
+                    message: format!(
+                        "invalid entry reference {value:?}; fragment must be ASCII letters, digits, or hyphen"
+                    ),
+                });
+            }
+            (display_id, Some(fragment.to_owned()))
+        }
+        None => (value, None),
+    };
+    parse_display_id(display_id)?;
+    Ok(EntryReferenceParts {
+        display_id: display_id.to_owned(),
+        fragment,
     })
 }
 

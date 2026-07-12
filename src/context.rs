@@ -12,11 +12,31 @@ const MIN_CONTEXT_BUDGET: usize = 64;
 const MINIMUM_EVIDENCE_BUDGET: usize = 40;
 const PRIMARY_RESULT_LIMIT: usize = 12;
 const LINKED_RESULT_LIMIT: usize = 20;
+const TASK_ECHO_BUDGET: usize = 64;
+const TARGET_ENTRY_TOKENS: usize = 150;
+const MIN_ADMITTED: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextFormat {
     Human,
     Agent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompileProfile {
+    TaskStart,
+    Review,
+    GoalDrafting,
+}
+
+impl CompileProfile {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TaskStart => "task-start",
+            Self::Review => "review",
+            Self::GoalDrafting => "goal-drafting",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -76,11 +96,13 @@ pub fn generate(
     )?;
     let linked = search::linked_results(repository, &primary, LINKED_RESULT_LIMIT)?;
     let terms = query_terms(task);
-    let mut candidates = load_candidates(repository, task, primary, true)?;
-    candidates.extend(load_candidates(repository, task, linked, false)?);
+    let mut candidates = load_candidates(repository, &terms, primary, true)?;
+    candidates.extend(load_candidates(repository, &terms, linked, false)?);
 
     let selection_budget = budget.saturating_mul(9) / 10;
-    let task_budget = selection_budget.saturating_div(3).max(1);
+    let task_budget = TASK_ECHO_BUDGET
+        .min(selection_budget.saturating_div(3))
+        .max(1);
     let task = truncate_at_boundary(task.trim(), task_budget);
     let header = render_header(format, &task, budget, selection_budget);
     if estimate_tokens(&header) > selection_budget {
@@ -97,7 +119,14 @@ pub fn generate(
         terms: &terms,
     };
     let mut selected = Vec::<(usize, Vec<EvidenceUnit>)>::new();
-    for (candidate_index, candidate) in candidates.iter().enumerate() {
+    let available_for_entries = selection_budget.saturating_sub(estimate_tokens(&header));
+    let admission_cap = if candidates.is_empty() {
+        0
+    } else {
+        let minimum = MIN_ADMITTED.min(candidates.len());
+        (available_for_entries / TARGET_ENTRY_TOKENS).clamp(minimum, candidates.len())
+    };
+    for (candidate_index, candidate) in candidates.iter().take(admission_cap).enumerate() {
         let Some(first) = candidate.evidence.first() else {
             continue;
         };
@@ -117,7 +146,7 @@ pub fn generate(
         &terms,
     );
 
-    let mut output = render_selection(format, &header, &candidates, &selected);
+    let mut output = render_selection(format, &header, &candidates, &selected, admission_cap);
     if selected.is_empty() {
         let no_results = match format {
             ContextFormat::Agent => {
@@ -132,6 +161,9 @@ pub fn generate(
         }
     }
 
+    if estimate_tokens(&output) > selection_budget {
+        output = truncate_at_boundary(&output, selection_budget);
+    }
     let estimated_tokens = estimate_tokens(&output);
     debug_assert!(estimated_tokens <= selection_budget);
     Ok(ContextBundle {
@@ -141,24 +173,232 @@ pub fn generate(
     })
 }
 
-fn load_candidates(
+pub fn compile(
     repository: &Repository,
     task: &str,
+    profile: CompileProfile,
+    format: ContextFormat,
+    budget: usize,
+    seeds: &[String],
+) -> Result<ContextBundle, BelayError> {
+    if task.trim().is_empty() {
+        return Err(BelayError::Validation {
+            message: "context compile task must not be empty".to_owned(),
+        });
+    }
+    let base_budget = budget.saturating_mul(6) / 10;
+    let base = generate(
+        repository,
+        task,
+        format,
+        base_budget.max(MIN_CONTEXT_BUDGET),
+    )?;
+    let goals = compile_goals(repository, task, seeds)?;
+    let failures = compile_failures(repository)?;
+    let mut output = match format {
+        ContextFormat::Agent => format!(
+            "# Context: {}\n(compiled by belay, profile={}, budget={})\n\n",
+            task.trim(),
+            profile.as_str(),
+            budget
+        ),
+        ContextFormat::Human => format!(
+            "# Context: {}\n\nProfile: {}\nBudget: {}\n\n",
+            task.trim(),
+            profile.as_str(),
+            budget
+        ),
+    };
+    output.push_str("## Goals\n");
+    if goals.is_empty() {
+        output.push_str("No directly related goals found.\n\n");
+    } else {
+        for goal in &goals {
+            output.push_str(&format!(
+                "- {} [{}]: {}\n",
+                goal.display_id, goal.status, goal.title
+            ));
+            for section in [
+                "Success Criteria",
+                "Constraints",
+                "Non-goals",
+                "Verification",
+            ] {
+                if let Some(text) = section_text(&goal.body, section) {
+                    let text = truncate_at_boundary(&text, 180);
+                    if !text.is_empty() {
+                        output.push_str(&format!("  {section}: {}\n", text.replace('\n', " ")));
+                    }
+                }
+            }
+            if let Ok(records) = crate::evidence::latest_for_target(repository, &goal.display_id) {
+                for record in records.into_iter().take(3) {
+                    output.push_str(&format!(
+                        "  Evidence: {} {} {} {}\n",
+                        record.verdict,
+                        record.kind,
+                        record.source,
+                        record.freshness.label()
+                    ));
+                }
+            }
+        }
+        output.push('\n');
+    }
+    output.push_str("## Past failures\n");
+    if failures.is_empty() {
+        output.push_str("None found.\n\n");
+    } else {
+        for failure in failures {
+            output.push_str(&format!(
+                "- {} [{}]: {}\n",
+                failure.display_id, failure.status, failure.title
+            ));
+        }
+        output.push('\n');
+    }
+    output.push_str("## Ranked context\n\n");
+    output.push_str(&base.text);
+    output.push_str("\n## Sources\n");
+    for goal in &goals {
+        output.push_str(&format!("- {}\n", goal.display_id));
+    }
+    output.push_str(&format!("- {} ranked entries\n", base.included_entries));
+    if estimate_tokens(&output) > budget {
+        output = truncate_at_boundary(&output, budget);
+    }
+    Ok(ContextBundle {
+        estimated_tokens: estimate_tokens(&output),
+        included_entries: base.included_entries + goals.len(),
+        text: output,
+    })
+}
+
+#[derive(Debug)]
+struct CompileEntry {
+    display_id: String,
+    title: String,
+    status: crate::entry::EntryStatus,
+    body: String,
+}
+
+fn compile_goals(
+    repository: &Repository,
+    task: &str,
+    seeds: &[String],
+) -> Result<Vec<CompileEntry>, BelayError> {
+    let mut results = Vec::new();
+    for seed in seeds {
+        let shown = crate::store::show(repository, seed)?;
+        if shown.entry.entry_type == EntryType::Goal {
+            results.push(CompileEntry {
+                display_id: shown.entry.display_id,
+                title: shown.entry.title,
+                status: shown.entry.status,
+                body: shown.entry.body,
+            });
+        }
+    }
+    let search_results = search::search(
+        repository,
+        &SearchRequest {
+            query: task.to_owned(),
+            entry_type: Some(EntryType::Goal),
+            status: None,
+            tag: None,
+            display_id: None,
+            limit: 5,
+        },
+    )
+    .unwrap_or_default();
+    for result in search_results {
+        if results
+            .iter()
+            .any(|entry| entry.display_id == result.display_id)
+        {
+            continue;
+        }
+        let shown = crate::store::show(repository, &result.display_id)?;
+        results.push(CompileEntry {
+            display_id: shown.entry.display_id,
+            title: shown.entry.title,
+            status: shown.entry.status,
+            body: shown.entry.body,
+        });
+    }
+    Ok(results)
+}
+
+fn compile_failures(repository: &Repository) -> Result<Vec<CompileEntry>, BelayError> {
+    let database_path = repository.database_path();
+    let connection = crate::database::open_read_only(&database_path)?;
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT id
+            FROM entries
+            WHERE (type = 'work' AND status = 'abandoned')
+               OR (type = 'decision' AND status = 'rejected')
+            ORDER BY updated_at DESC, display_id
+            LIMIT 5
+            ",
+        )
+        .map_err(|source| BelayError::sqlite(&database_path, source))?;
+    let ids = statement
+        .query_map([], |row| row.get::<_, i64>(0))
+        .map_err(|source| BelayError::sqlite(&database_path, source))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|source| BelayError::sqlite(&database_path, source))?;
+    ids.into_iter()
+        .map(|id| {
+            let entry = crate::store::load_entry(&connection, &database_path, id)?;
+            Ok(CompileEntry {
+                display_id: entry.display_id,
+                title: entry.title,
+                status: entry.status,
+                body: entry.body,
+            })
+        })
+        .collect()
+}
+
+fn section_text(body: &str, wanted: &str) -> Option<String> {
+    let mut in_section = false;
+    let mut text = String::new();
+    for line in body.lines() {
+        if let Some(title) = line.strip_prefix("## ") {
+            if in_section {
+                break;
+            }
+            in_section = title.trim().eq_ignore_ascii_case(wanted);
+            continue;
+        }
+        if in_section {
+            text.push_str(line);
+            text.push('\n');
+        }
+    }
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
+fn load_candidates(
+    repository: &Repository,
+    terms: &[String],
     results: Vec<SearchResult>,
     primary: bool,
 ) -> Result<Vec<Candidate>, BelayError> {
     let database_path = repository.database_path();
     let connection = crate::database::open(&database_path)?;
-    let terms = query_terms(task);
     let mut candidates = Vec::new();
+    let mut statement = connection
+        .prepare(
+            "SELECT section, text FROM entry_chunks
+             WHERE entry_id = ?1 ORDER BY ordinal",
+        )
+        .map_err(|source| BelayError::sqlite(&database_path, source))?;
 
     for result in results {
-        let mut statement = connection
-            .prepare(
-                "SELECT section, text FROM entry_chunks
-                 WHERE entry_id = ?1 ORDER BY ordinal",
-            )
-            .map_err(|source| BelayError::sqlite(&database_path, source))?;
         let chunks = statement
             .query_map(params![result.internal_id], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -171,8 +411,9 @@ fn load_candidates(
             .into_iter()
             .flat_map(|(section, text)| evidence_units(&section, &text))
             .collect::<Vec<_>>();
-        evidence.sort_by_key(|unit| evidence_priority(&result, unit, &terms, primary));
-        evidence.dedup();
+        let mut seen = BTreeSet::new();
+        evidence.retain(|unit| seen.insert((unit.section.clone(), unit.text.clone())));
+        evidence.sort_by_key(|unit| evidence_priority(&result, unit, terms, primary));
         candidates.push(Candidate { result, evidence });
     }
     Ok(candidates)
@@ -203,11 +444,23 @@ fn evidence_priority(
     } else {
         4
     };
-    (class, important.unwrap_or(usize::MAX).min(255) as u8, text)
+    (
+        class,
+        important.unwrap_or(usize::MAX).min(255) as u8,
+        String::new(),
+    )
 }
 
 fn important_sections(entry_type: EntryType) -> &'static [&'static str] {
     match entry_type {
+        EntryType::Goal => &[
+            "Summary",
+            "Success Criteria",
+            "Constraints",
+            "Non-goals",
+            "Verification",
+            "Risks",
+        ],
         EntryType::Decision => &["Decision", "Rationale", "Risks"],
         EntryType::Plan => &["Summary", "Objectives", "Success Criteria"],
         EntryType::Work => &["Changes", "Validation", "Blockers"],
@@ -301,9 +554,11 @@ fn distribute_remaining_budget(
     let total_weight = (1..=selected.len())
         .map(|rank| 1.0 / rank as f64)
         .sum::<f64>();
+    let mut carry = 0;
 
     for rank in 0..selected.len() {
-        let share = ((remaining as f64 * (1.0 / (rank + 1) as f64)) / total_weight) as usize;
+        let share =
+            ((remaining as f64 * (1.0 / (rank + 1) as f64)) / total_weight) as usize + carry;
         let candidate_index = selected[rank].0;
         let current_first_tokens = estimate_tokens(&selected[rank].1[0].text);
         let expanded_first = truncate_evidence(
@@ -331,10 +586,25 @@ fn distribute_remaining_budget(
         }
         while rendered_tokens(format, header, candidates, selected) > selection_budget {
             if selected[rank].1.len() == 1 {
-                break;
+                let current = selected[rank].1[0].text.clone();
+                let current_tokens = estimate_tokens(&current);
+                if current_tokens <= 1 {
+                    break;
+                }
+                selected[rank].1[0].text =
+                    truncate_evidence(&current, current_tokens.saturating_sub(1), terms);
+                continue;
             }
             selected[rank].1.pop();
         }
+        used = estimate_tokens(&selected[rank].1[0].text).saturating_sub(current_first_tokens)
+            + selected[rank]
+                .1
+                .iter()
+                .skip(1)
+                .map(|unit| estimate_tokens(&unit.text))
+                .sum::<usize>();
+        carry = share.saturating_sub(used);
     }
 }
 
@@ -472,7 +742,7 @@ fn render_header(
 ) -> String {
     match format {
         ContextFormat::Agent => format!(
-            "Context bundle\nTask: {task}\nFormat: agent\nBudget: {budget} estimated tokens\nSelection limit: {selection_budget} estimated tokens\n"
+            "Context bundle\nTask: {task}\nFormat: agent\nBudget: {budget} estimated tokens\n"
         ),
         ContextFormat::Human => format!(
             "Context for: {task}\nFormat: human\nBudget: {budget} estimated tokens\nSelection limit: {selection_budget} estimated tokens\n"
@@ -486,7 +756,13 @@ fn rendered_tokens(
     candidates: &[Candidate],
     selected: &[(usize, Vec<EvidenceUnit>)],
 ) -> usize {
-    estimate_tokens(&render_selection(format, header, candidates, selected))
+    estimate_tokens(&render_selection(
+        format,
+        header,
+        candidates,
+        selected,
+        candidates.len(),
+    ))
 }
 
 fn render_selection(
@@ -494,6 +770,7 @@ fn render_selection(
     header: &str,
     candidates: &[Candidate],
     selected: &[(usize, Vec<EvidenceUnit>)],
+    admission_cap: usize,
 ) -> String {
     let mut output = header.to_owned();
     let selected_by_type = selected.iter().fold(
@@ -515,6 +792,23 @@ fn render_selection(
             output.push_str(&render_result(format, &candidates[*index].result, evidence));
         }
     }
+    if format == ContextFormat::Agent && !selected.is_empty() {
+        let show_ids = selected
+            .iter()
+            .map(|(index, _)| format!("belay show {}", candidates[*index].result.display_id))
+            .collect::<Vec<_>>()
+            .join("; ");
+        output.push_str(&format!("\nRead more: {show_ids}\n"));
+        let related = candidates
+            .iter()
+            .skip(admission_cap)
+            .map(|candidate| candidate.result.display_id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !related.is_empty() {
+            output.push_str(&format!("Also related: {related}\n"));
+        }
+    }
     output
 }
 
@@ -524,22 +818,21 @@ fn render_result(
     evidence: &[EvidenceUnit],
 ) -> String {
     let tags = if result.tags.is_empty() {
-        "none".to_owned()
+        String::new()
     } else {
-        result.tags.join(", ")
+        format!("  Tags: {}\n", result.tags.join(", "))
     };
     let excerpt = render_evidence(evidence);
     match format {
         ContextFormat::Agent => format!(
-            "- {}: {} [{}]\n  Why relevant: {}\n  Source: {}\n  Tags: {}\n  Evidence: {}\n  Next: belay show {}\n",
+            "- {}: {} [{}]\n  Why: {}\n  Source: {}\n{}  Evidence: {}\n",
             result.display_id,
             result.title,
             result.status,
             result.reason,
             result.source_path,
             tags,
-            excerpt,
-            result.display_id
+            excerpt
         ),
         ContextFormat::Human => format!(
             "{} - {}\nStatus: {}\nRelevance: {}\nSource: {}\nTags: {}\nEvidence: {}\nFollow-up: belay show {}\n\n",
@@ -572,6 +865,7 @@ fn render_evidence(evidence: &[EvidenceUnit]) -> String {
 
 fn group_heading(format: ContextFormat, entry_type: EntryType) -> String {
     let label = match entry_type {
+        EntryType::Goal => "Goals",
         EntryType::Plan => "Plans",
         EntryType::Decision => "Decisions",
         EntryType::Work => "Work",

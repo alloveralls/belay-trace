@@ -9,15 +9,18 @@ use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 use crate::agent;
 use crate::context;
+use crate::coverage;
 use crate::entry::{EntryStatus, EntryType, LinkRelation};
 use crate::error::BelayError;
+use crate::evidence;
 use crate::export;
+use crate::goal;
 use crate::reconcile;
 use crate::repository;
 use crate::search::{self, SearchRequest};
 use crate::store::{self, MutationOutcome};
 
-const TOP_LEVEL_ABOUT: &str = "Preserve plans, decisions, work, and reviews in a local SQLite store with a tracked Markdown review surface.\n\nWorkflow groups:\n  Setup: init and doctor\n  Capture: add, link, status, and show\n  Reconcile: sync and rebuild\n  Retrieve: search, context, and export\n\nThe core workflow is: initialize a repository, add and link trace entries, synchronize direct Markdown edits, then retrieve focused context with search and context commands.";
+const TOP_LEVEL_ABOUT: &str = "Preserve goals, plans, decisions, work, reviews, and evidence in a local SQLite store with a tracked Markdown review surface.\n\nWorkflow groups:\n  Setup: init and doctor\n  Capture: add, link, status, and show\n  Assurance: goal, verify, and coverage\n  Reconcile: sync and rebuild\n  Retrieve: search, context, and export\n\nThe core workflow is: initialize a repository, add and link trace entries, synchronize direct Markdown edits, then retrieve focused context with search and context commands.";
 
 const TOP_LEVEL_AFTER_HELP: &str = r#"Behavior and Side Effects:
   Project commands discover the current repository root and read .belay/config.toml.
@@ -27,8 +30,11 @@ const TOP_LEVEL_AFTER_HELP: &str = r#"Behavior and Side Effects:
 Examples:
   belay init
   belay add decision --title "Use SQLite" --body "Keep operational state local."
+  belay add goal --title "Reliable sync"
+  belay goal lint --all
+  belay verify record --kind test --verdict pass --source "cargo test" --summary "all tests passed" --verifies GOAL-...
   belay search "sqlite migration"
-  belay context "implement repository sync" --format agent --budget 2500
+  belay context compile "implement repository sync" --format agent --budget 2500
 
 Exit Status:
   0  Success, help, or version output
@@ -46,7 +52,8 @@ const INIT_AFTER_HELP: &str = r#"Behavior and Side Effects:
   Creates or completes .belay/config.toml, managed entry directories, local SQLite
   state, .belay/.gitignore, and deterministic agent integration templates. Managed
   generated templates are refreshed. AGENTS.md and agent skills are modified only
-  by the explicit --update-agents and --install-skill options.
+  by the explicit --update-agents and --install-skill options. --reset-state
+  atomically rebuilds ignored SQLite state from tracked Markdown.
 
 Examples:
   cd /path/to/repository
@@ -54,6 +61,8 @@ Examples:
   belay init --update-agents
   belay init --install-skill codex
   belay init --install-skill claude
+  belay init --install-skill codex --install-skill claude
+  belay init --reset-state
 
 Exit Status:
   0  Repository initialized or already complete
@@ -67,10 +76,12 @@ Related Commands:
 
 const ADD_AFTER_HELP: &str = r#"Behavior and Side Effects:
   Creates an entry in SQLite, updates chunks and FTS state, writes its deterministic
-  managed Markdown mirror, and records a sync baseline.
+  managed Markdown mirror, and records a sync baseline. Goal entries may omit a
+  body source; belay then writes the required Goal sections as a template.
 
 Examples:
   belay add decision --title "Use SQLite" --body "Keep operational state local."
+  belay add goal --title "Reliable sync"
 
 Exit Status:
   0  Entry created
@@ -84,8 +95,10 @@ Related Commands:
 
 const LINK_AFTER_HELP: &str = r#"Behavior and Side Effects:
   Adds a validated directional relationship between existing entries. Identical links
-  are idempotent. The source entry revision, mirror, and sync baseline are updated.
-  Allowed relations are references, implements, reviews, supersedes, and follows-up.
+  are idempotent. Targets may include Goal item fragments such as #sc-3f9a.
+  The source entry revision, mirror, and sync baseline are updated.
+  Allowed relations include references, implements, reviews, supersedes,
+  follows-up, fulfills, supports, verifies, and refutes.
 
 Examples:
   belay link WRK-20260606T120000-001-schema DEC-20260606T115000-001-sqlite --relation implements
@@ -160,7 +173,9 @@ Related Commands:
 const CONTEXT_AFTER_HELP: &str = r#"Behavior and Side Effects:
   Produces source-attributed context from ranked matches and directly linked entries.
   Selection preserves relevance order, guarantees evidence for every included entry,
-  and gives higher-ranked entries a larger share of remaining excerpt space.
+  admits a budget-scaled set of candidates, and gives higher-ranked entries a
+  larger share of remaining excerpt space. `belay context compile` adds Goal,
+  Evidence, constraints, non-goals, and past-failure sections before ranked context.
   Selection uses 90 percent of the requested budget, reserving 10 percent headroom.
   Token estimates use ceil(ASCII UTF-8 bytes / 4) plus non-ASCII scalar count.
   The default budget is 2500; budgets below 64 are rejected.
@@ -168,6 +183,7 @@ const CONTEXT_AFTER_HELP: &str = r#"Behavior and Side Effects:
 
 Examples:
   belay context "implement repository sync" --format agent --budget 2500
+  belay context compile "implement repository sync" --profile task-start --budget 4000
 
 Exit Status:
   0  Context generated
@@ -178,6 +194,65 @@ Exit Status:
 
 Related Commands:
   `belay search` and `belay show`."#;
+
+const GOAL_AFTER_HELP: &str = r#"Behavior and Side Effects:
+  Reviews Goal entries without calling an LLM. Lint performs deterministic checks;
+  improve emits a structured bundle for an agent-mediated semantic review.
+
+Examples:
+  belay goal lint GOAL-20260701T090000-001-reliable-sync
+  belay goal lint --all --format json
+  belay goal improve GOAL-20260701T090000-001-reliable-sync --budget 3000
+
+Exit Status:
+  0  Goal command completed, including non-strict lint findings
+  2  Invalid invocation
+  3  Repository not initialized
+  4  Invalid goal, strict lint failure, or output validation failure
+  6  Storage failure
+
+Related Commands:
+  `belay add goal`, `belay context compile`, and `belay coverage`."#;
+
+const VERIFY_AFTER_HELP: &str = r#"Behavior and Side Effects:
+  Records append-only Evidence in .belay/evidence/*.ndjson and indexes it in SQLite.
+  Evidence is linked to Goal, Decision, Work, or Goal item references and is never
+  edited in place; updates are represented by new records.
+
+Examples:
+  belay verify record --kind test --verdict pass --source "cargo test" --summary "all tests passed" --verifies GOAL-...
+  belay verify import --junit target/junit.xml --verifies WRK-...
+  belay verify status GOAL-...
+
+Exit Status:
+  0  Evidence command completed
+  2  Invalid invocation
+  3  Repository not initialized
+  4  Invalid evidence, target, or file
+  6  Storage or filesystem failure
+
+Related Commands:
+  `belay coverage`, `belay doctor`, and `belay rebuild`."#;
+
+const COVERAGE_AFTER_HELP: &str = r#"Behavior and Side Effects:
+  Computes Goal Coverage for active Goals, separating link-based traceability from
+  fresh passing Evidence-backed verification. `--fail-under verified=N` can be used
+  as a CI gate and returns exit status 4 on failure.
+
+Examples:
+  belay coverage
+  belay coverage GOAL-20260701T090000-001-reliable-sync
+  belay coverage --format json --fail-under verified=60
+
+Exit Status:
+  0  Coverage computed and thresholds satisfied
+  2  Invalid invocation
+  3  Repository not initialized
+  4  Invalid target or fail-under threshold not met
+  6  Storage failure
+
+Related Commands:
+  `belay goal lint`, `belay verify status`, and `belay context compile`."#;
 
 const SYNC_AFTER_HELP: &str = r#"Behavior and Side Effects:
   Reconciles SQLite with managed Markdown using the last successful sync hashes.
@@ -318,6 +393,24 @@ enum Command {
     Context(ContextArgs),
 
     #[command(
+        about = "Review and improve Goal entries",
+        after_help = GOAL_AFTER_HELP
+    )]
+    Goal(GoalArgs),
+
+    #[command(
+        about = "Record and inspect verification evidence",
+        after_help = VERIFY_AFTER_HELP
+    )]
+    Verify(VerifyArgs),
+
+    #[command(
+        about = "Compute Goal Coverage",
+        after_help = COVERAGE_AFTER_HELP
+    )]
+    Coverage(CoverageArgs),
+
+    #[command(
         about = "Reconcile SQLite and managed Markdown",
         after_help = SYNC_AFTER_HELP
     )]
@@ -348,9 +441,13 @@ struct InitArgs {
     #[arg(long)]
     update_agents: bool,
 
-    /// Install a generated agent skill into an explicit repository-scoped target.
-    #[arg(long, value_enum, value_name = "TARGET")]
-    install_skill: Option<SkillTarget>,
+    /// Install generated agent skills into explicit repository-scoped targets. Repeat for multiple targets.
+    #[arg(long, value_enum, value_name = "TARGET", action = clap::ArgAction::Append)]
+    install_skill: Vec<SkillTarget>,
+
+    /// Atomically rebuild local SQLite state from tracked Markdown after initialization.
+    #[arg(long)]
+    reset_state: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -362,12 +459,12 @@ enum SkillTarget {
 #[derive(Debug, Args)]
 #[command(group(
     ArgGroup::new("body_source")
-        .required(true)
+        .required(false)
         .multiple(false)
         .args(["body", "body_file", "stdin"])
 ))]
 struct AddArgs {
-    /// Entry type: plan, decision, work, review, or note.
+    /// Entry type: goal, plan, decision, work, review, or note.
     entry_type: String,
 
     /// Human-readable entry title.
@@ -449,8 +546,9 @@ enum CliContextFormat {
 
 #[derive(Debug, Args)]
 struct ContextArgs {
-    /// Task to retrieve context for.
-    task: String,
+    /// Task to retrieve context for. Use `compile <task>` for the Phase 5 compiler.
+    #[arg(num_args = 1..=2)]
+    task: Vec<String>,
 
     /// Output format for a human or an AI agent.
     #[arg(long, value_enum, default_value_t = CliContextFormat::Human)]
@@ -459,6 +557,127 @@ struct ContextArgs {
     /// Approximate output token budget.
     #[arg(long, default_value_t = 2500)]
     budget: usize,
+
+    /// Context compiler profile.
+    #[arg(long, value_enum, default_value_t = CliCompileProfile::TaskStart)]
+    profile: CliCompileProfile,
+
+    /// Explicit seed entry for context compile.
+    #[arg(long = "seed")]
+    seeds: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliCompileProfile {
+    TaskStart,
+    Review,
+    GoalDrafting,
+}
+
+#[derive(Debug, Args)]
+struct GoalArgs {
+    #[command(subcommand)]
+    command: GoalCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum GoalCommand {
+    Lint(GoalLintArgs),
+    Improve(GoalImproveArgs),
+}
+
+#[derive(Debug, Args)]
+struct GoalLintArgs {
+    id: Option<String>,
+
+    #[arg(long)]
+    all: bool,
+
+    #[arg(long, value_enum, default_value_t = CliReportFormat::Human)]
+    format: CliReportFormat,
+
+    #[arg(long)]
+    strict: bool,
+
+    #[arg(long)]
+    score: bool,
+}
+
+#[derive(Debug, Args)]
+struct GoalImproveArgs {
+    id: String,
+
+    #[arg(long, default_value_t = 3000)]
+    budget: usize,
+}
+
+#[derive(Debug, Args)]
+struct VerifyArgs {
+    #[command(subcommand)]
+    command: VerifyCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum VerifyCommand {
+    Record(VerifyRecordArgs),
+    Import(VerifyImportArgs),
+    Status(EntryIdArgs),
+}
+
+#[derive(Debug, Args)]
+struct VerifyRecordArgs {
+    #[arg(long)]
+    kind: String,
+
+    #[arg(long)]
+    verdict: String,
+
+    #[arg(long)]
+    source: String,
+
+    #[arg(long, default_value = "local:user")]
+    issuer: String,
+
+    #[arg(long)]
+    summary: String,
+
+    #[arg(long)]
+    commit: Option<String>,
+
+    #[arg(long = "captured-at")]
+    captured_at: Option<String>,
+
+    #[arg(long = "verifies")]
+    verifies: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct VerifyImportArgs {
+    #[arg(long)]
+    junit: PathBuf,
+
+    #[arg(long = "verifies")]
+    verifies: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct CoverageArgs {
+    id: Option<String>,
+
+    #[arg(long, value_enum, default_value_t = CliReportFormat::Human)]
+    format: CliReportFormat,
+
+    #[arg(long = "include-completed")]
+    include_completed: bool,
+
+    #[arg(long = "fail-under")]
+    fail_under: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliReportFormat {
+    Human,
+    Json,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -549,7 +768,11 @@ fn execute(cli: Cli, current_dir: &Path) -> Result<(), BelayError> {
                     activation.path.display()
                 );
             }
-            if let Some(target) = arguments.install_skill {
+            if arguments.reset_state {
+                let count = reconcile::rebuild(&outcome.repository)?;
+                println!("Rebuilt local state from {count} Markdown entries");
+            }
+            for target in arguments.install_skill {
                 let (name, activation) = match target {
                     SkillTarget::Codex => {
                         ("Codex", agent::install_codex_skill(&outcome.repository)?)
@@ -569,7 +792,7 @@ fn execute(cli: Cli, current_dir: &Path) -> Result<(), BelayError> {
         Command::Add(arguments) => {
             let repository = repository::discover(current_dir)?;
             let entry_type = EntryType::from_str(&arguments.entry_type)?;
-            let body = read_body(&arguments)?;
+            let body = read_body(&arguments, entry_type)?;
             let entry = store::create(&repository, entry_type, arguments.title, body)?;
             println!("Created {}", entry.display_id);
             Ok(())
@@ -639,9 +862,124 @@ fn execute(cli: Cli, current_dir: &Path) -> Result<(), BelayError> {
                 CliContextFormat::Human => context::ContextFormat::Human,
                 CliContextFormat::Agent => context::ContextFormat::Agent,
             };
-            let bundle = context::generate(&repository, &arguments.task, format, arguments.budget)?;
+            let (compile, task) = parse_context_task(&arguments.task)?;
+            let bundle = if compile {
+                let profile = match arguments.profile {
+                    CliCompileProfile::TaskStart => context::CompileProfile::TaskStart,
+                    CliCompileProfile::Review => context::CompileProfile::Review,
+                    CliCompileProfile::GoalDrafting => context::CompileProfile::GoalDrafting,
+                };
+                context::compile(
+                    &repository,
+                    task,
+                    profile,
+                    format,
+                    arguments.budget,
+                    &arguments.seeds,
+                )?
+            } else {
+                context::generate(&repository, task, format, arguments.budget)?
+            };
             print!("{}", bundle.text);
             Ok(())
+        }
+        Command::Goal(arguments) => {
+            let repository = repository::discover(current_dir)?;
+            match arguments.command {
+                GoalCommand::Lint(arguments) => {
+                    if arguments.all && arguments.id.is_some() {
+                        return Err(BelayError::Validation {
+                            message:
+                                "`belay goal lint` accepts either a goal ID or --all, not both"
+                                    .to_owned(),
+                        });
+                    }
+                    let reports = goal::lint(&repository, arguments.id.as_deref(), arguments.all)?;
+                    let format = match arguments.format {
+                        CliReportFormat::Human => goal::GoalLintFormat::Human,
+                        CliReportFormat::Json => goal::GoalLintFormat::Json,
+                    };
+                    print!("{}", goal::render_lint(&reports, format, arguments.score)?);
+                    if arguments.strict
+                        && reports
+                            .iter()
+                            .any(goal::GoalLintReport::has_strict_findings)
+                    {
+                        Err(BelayError::Validation {
+                            message: "goal lint strict mode found deterministic findings"
+                                .to_owned(),
+                        })
+                    } else {
+                        Ok(())
+                    }
+                }
+                GoalCommand::Improve(arguments) => {
+                    print!(
+                        "{}",
+                        goal::improve(&repository, &arguments.id, arguments.budget)?
+                    );
+                    Ok(())
+                }
+            }
+        }
+        Command::Verify(arguments) => {
+            let repository = repository::discover(current_dir)?;
+            match arguments.command {
+                VerifyCommand::Record(arguments) => {
+                    let record = evidence::record(
+                        &repository,
+                        evidence::RecordInput {
+                            kind: arguments.kind,
+                            verdict: arguments.verdict,
+                            commit_sha: arguments.commit,
+                            captured_at: arguments.captured_at,
+                            source: arguments.source,
+                            issuer: arguments.issuer,
+                            summary: arguments.summary,
+                            detail: serde_json::json!({}),
+                            verifies: arguments.verifies,
+                        },
+                    )?;
+                    println!("Recorded {}", record.display_id);
+                    Ok(())
+                }
+                VerifyCommand::Import(arguments) => {
+                    let record =
+                        evidence::import_junit(&repository, &arguments.junit, arguments.verifies)?;
+                    println!("Imported {}", record.display_id);
+                    Ok(())
+                }
+                VerifyCommand::Status(arguments) => {
+                    let status = evidence::status(&repository, &arguments.id)?;
+                    print!("{}", evidence::render_status(&status));
+                    Ok(())
+                }
+            }
+        }
+        Command::Coverage(arguments) => {
+            let repository = repository::discover(current_dir)?;
+            let report = coverage::report(
+                &repository,
+                arguments.id.as_deref(),
+                arguments.include_completed,
+            )?;
+            let format = match arguments.format {
+                CliReportFormat::Human => coverage::CoverageFormat::Human,
+                CliReportFormat::Json => coverage::CoverageFormat::Json,
+            };
+            print!("{}", coverage::render(&report, format)?);
+            let threshold = arguments
+                .fail_under
+                .as_deref()
+                .map(parse_fail_under)
+                .transpose()?;
+            if coverage::fails_under(&report, threshold) {
+                Err(BelayError::Validation {
+                    message: "goal coverage is below requested threshold".to_owned(),
+                })
+            } else {
+                Ok(())
+            }
         }
         Command::Sync(arguments) => {
             let repository = repository::discover(current_dir)?;
@@ -785,7 +1123,7 @@ fn print_search_results(request: &SearchRequest, results: &[search::SearchResult
     }
 }
 
-fn read_body(arguments: &AddArgs) -> Result<String, BelayError> {
+fn read_body(arguments: &AddArgs, entry_type: EntryType) -> Result<String, BelayError> {
     if let Some(body) = &arguments.body {
         return Ok(body.clone());
     }
@@ -793,11 +1131,56 @@ fn read_body(arguments: &AddArgs) -> Result<String, BelayError> {
         return fs::read_to_string(path)
             .map_err(|source| BelayError::io("read body file", path, source));
     }
-    let mut body = String::new();
-    io::stdin()
-        .read_to_string(&mut body)
-        .map_err(|source| BelayError::io("read standard input", "stdin", source))?;
-    Ok(body)
+    if arguments.stdin {
+        let mut body = String::new();
+        io::stdin()
+            .read_to_string(&mut body)
+            .map_err(|source| BelayError::io("read standard input", "stdin", source))?;
+        return Ok(body);
+    }
+    if entry_type == EntryType::Goal {
+        return Ok(goal::template());
+    }
+    Err(BelayError::Validation {
+        message: "entry body is required; pass --body, --body-file, or --stdin".to_owned(),
+    })
+}
+
+fn parse_context_task(values: &[String]) -> Result<(bool, &str), BelayError> {
+    match values {
+        [command] if command == "compile" => Err(BelayError::Validation {
+            message: "context compile requires a task".to_owned(),
+        }),
+        [task] => Ok((false, task.as_str())),
+        [command, task] if command == "compile" => Ok((true, task.as_str())),
+        [command, _] => Err(BelayError::Validation {
+            message: format!("unsupported context subcommand {command:?}; expected compile"),
+        }),
+        _ => Err(BelayError::Validation {
+            message: "context requires a task".to_owned(),
+        }),
+    }
+}
+
+fn parse_fail_under(value: &str) -> Result<(String, usize), BelayError> {
+    let Some((kind, threshold)) = value.split_once('=') else {
+        return Err(BelayError::Validation {
+            message: "--fail-under must be formatted as verified=N or traceability=N".to_owned(),
+        });
+    };
+    if kind != "verified" && kind != "traceability" {
+        return Err(BelayError::Validation {
+            message: "--fail-under kind must be verified or traceability".to_owned(),
+        });
+    }
+    let threshold = threshold
+        .parse::<usize>()
+        .ok()
+        .filter(|value| *value <= 100)
+        .ok_or_else(|| BelayError::Validation {
+            message: "--fail-under threshold must be an integer from 0 to 100".to_owned(),
+        })?;
+    Ok((kind.to_owned(), threshold))
 }
 
 fn print_shown_entry(shown: &store::ShownEntry) {
@@ -852,9 +1235,8 @@ mod tests {
 
     #[test]
     fn add_requires_exactly_one_body_source() {
-        let missing = try_parse_from(["belay", "add", "decision", "--title", "SQLite"])
-            .expect_err("body source is required");
-        assert_eq!(missing.kind(), ErrorKind::MissingRequiredArgument);
+        try_parse_from(["belay", "add", "goal", "--title", "Reliable sync"])
+            .expect("goal body source is optional because a template is generated");
 
         let duplicate = try_parse_from([
             "belay", "add", "decision", "--title", "SQLite", "--body", "inline", "--stdin",

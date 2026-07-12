@@ -7,7 +7,7 @@ use crate::config::Config;
 use crate::database;
 use crate::error::BelayError;
 
-const ENTRY_DIRECTORIES: &[&str] = &["plans", "decisions", "work", "reviews", "notes"];
+const ENTRY_DIRECTORIES: &[&str] = &["goals", "plans", "decisions", "work", "reviews", "notes"];
 
 const BELAY_GITIGNORE: &str = "state/\n*.sqlite-wal\n*.sqlite-shm\n";
 
@@ -31,6 +31,10 @@ impl Repository {
 
     pub fn entries_path(&self) -> PathBuf {
         self.belay_dir.join(&self.config.storage.entries)
+    }
+
+    pub fn evidence_path(&self) -> PathBuf {
+        self.belay_dir.join("evidence")
     }
 }
 
@@ -125,6 +129,7 @@ fn ensure_layout(repository: &Repository) -> Result<(), BelayError> {
 
     ensure_managed_directory(&repository.belay_dir, Path::new("agent/codex"))?;
     ensure_managed_directory(&repository.belay_dir, Path::new("agent/claude"))?;
+    ensure_managed_directory(&repository.belay_dir, Path::new("evidence"))?;
 
     ensure_gitignore(&repository.belay_dir.join(".gitignore"))?;
     Ok(())
@@ -303,11 +308,13 @@ mod tests {
             ".belay/config.toml",
             ".belay/.gitignore",
             ".belay/state/belay.sqlite",
+            ".belay/entries/goals",
             ".belay/entries/plans",
             ".belay/entries/decisions",
             ".belay/entries/work",
             ".belay/entries/reviews",
             ".belay/entries/notes",
+            ".belay/evidence",
             ".belay/agent/AGENTS.md.snippet",
             ".belay/agent/claude/SKILL.md",
             ".belay/agent/codex/SKILL.md",
@@ -339,7 +346,7 @@ mod tests {
                 row.get(0)
             })
             .expect("count migrations");
-        assert_eq!(migration_count, 2);
+        assert_eq!(migration_count, crate::database::LATEST_SCHEMA_VERSION);
     }
 
     #[test]
