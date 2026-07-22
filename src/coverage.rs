@@ -351,7 +351,6 @@ fn has_fresh_pass(
         FROM evidence_links links
         JOIN evidence ON evidence.id = links.evidence_id
         WHERE links.target = ?1 AND links.relation = 'verifies'
-        ORDER BY evidence.captured_at DESC
         ",
     ) {
         Ok(statement) => statement,

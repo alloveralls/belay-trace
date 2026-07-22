@@ -3304,3 +3304,57 @@ fn time_based_freshness_drives_status_doctor_and_coverage_without_git_metadata()
         .expect("test dimension");
     assert_eq!(test_dimension["verified"]["covered"], 0);
 }
+
+#[test]
+fn evidence_status_orders_offset_timestamps_by_instant() {
+    let temporary = initialize_repository();
+    let goal = created_id(
+        &belay()
+            .args(["add", "goal", "--title", "Evidence ordering"])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add goal"),
+    );
+
+    for (captured_at, source) in [
+        ("2026-07-22T01:00:00+02:00", "older-offset-evidence"),
+        ("2026-07-22T00:30:00Z", "newer-utc-evidence"),
+    ] {
+        let recorded = belay()
+            .args([
+                "verify",
+                "record",
+                "--kind",
+                "test",
+                "--verdict",
+                "pass",
+                "--commit",
+                "unknown",
+                "--captured-at",
+                captured_at,
+                "--source",
+                source,
+                "--summary",
+                "ordering evidence",
+                "--verifies",
+                &goal,
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("record ordered evidence");
+        assert!(recorded.status.success(), "{recorded:?}");
+    }
+
+    let status = belay()
+        .args(["verify", "status", &goal])
+        .current_dir(temporary.path())
+        .output()
+        .expect("show ordered evidence");
+    assert!(status.status.success(), "{status:?}");
+    let stdout = String::from_utf8(status.stdout).expect("status stdout");
+    let newer = stdout.find("newer-utc-evidence").expect("newer evidence");
+    let older = stdout
+        .find("older-offset-evidence")
+        .expect("older evidence");
+    assert!(newer < older, "{stdout}");
+}

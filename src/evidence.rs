@@ -177,7 +177,7 @@ pub fn status(repository: &Repository, target: &str) -> Result<EvidenceStatus, B
             FROM evidence_links links
             JOIN evidence ON evidence.id = links.evidence_id
             WHERE links.target = ?1
-            ORDER BY evidence.captured_at DESC, evidence.display_id DESC
+            ORDER BY julianday(evidence.captured_at) DESC, evidence.display_id DESC
             ",
         )
         .map_err(|source| BelayError::sqlite(&database_path, source))?;
@@ -304,7 +304,7 @@ pub fn stale_doctor_details(
                 JOIN evidence ON evidence.id = links.evidence_id
                 WHERE links.target = ?1 AND links.relation = 'verifies'
                   AND evidence.verdict = 'pass'
-                ORDER BY evidence.captured_at DESC
+                ORDER BY julianday(evidence.captured_at) DESC, evidence.display_id DESC
                 LIMIT 1
                 ",
                 [display_id.as_str()],
