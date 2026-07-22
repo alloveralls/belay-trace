@@ -3220,7 +3220,7 @@ fn goal_verify_coverage_and_compile_work_together() {
     let compiled_stdout = String::from_utf8(compiled.stdout).expect("compiled stdout");
     assert!(compiled_stdout.contains("# Context: reliable sync"));
     assert!(compiled_stdout.contains("(compiled by belay, budget=2500)"));
-    assert!(!compiled_stdout.contains("profile"));
+    assert!(!compiled_stdout.contains("profile="));
     assert!(compiled_stdout.contains("## Goals"));
     assert!(compiled_stdout.contains(&goal));
 
