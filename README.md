@@ -144,7 +144,7 @@ Generate bounded, source-attributed context for humans or agents:
 ```sh
 belay context "implement repository sync" --format human --budget 2500
 belay context "implement repository sync" --format agent --budget 2500
-belay context compile "implement repository sync" --profile task-start --budget 4000
+belay context compile "implement repository sync" --budget 4000
 ```
 
 Context selection follows BM25 relevance, then linked entries in deterministic

@@ -22,23 +22,6 @@ pub enum ContextFormat {
     Agent,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompileProfile {
-    TaskStart,
-    Review,
-    GoalDrafting,
-}
-
-impl CompileProfile {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::TaskStart => "task-start",
-            Self::Review => "review",
-            Self::GoalDrafting => "goal-drafting",
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct ContextBundle {
     pub text: String,
@@ -176,7 +159,6 @@ pub fn generate(
 pub fn compile(
     repository: &Repository,
     task: &str,
-    profile: CompileProfile,
     format: ContextFormat,
     budget: usize,
     seeds: &[String],
@@ -197,17 +179,11 @@ pub fn compile(
     let failures = compile_failures(repository)?;
     let mut output = match format {
         ContextFormat::Agent => format!(
-            "# Context: {}\n(compiled by belay, profile={}, budget={})\n\n",
+            "# Context: {}\n(compiled by belay, budget={})\n\n",
             task.trim(),
-            profile.as_str(),
             budget
         ),
-        ContextFormat::Human => format!(
-            "# Context: {}\n\nProfile: {}\nBudget: {}\n\n",
-            task.trim(),
-            profile.as_str(),
-            budget
-        ),
+        ContextFormat::Human => format!("# Context: {}\n\nBudget: {}\n\n", task.trim(), budget),
     };
     output.push_str("## Goals\n");
     if goals.is_empty() {

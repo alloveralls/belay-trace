@@ -3219,8 +3219,28 @@ fn goal_verify_coverage_and_compile_work_together() {
     assert!(compiled.status.success(), "{compiled:?}");
     let compiled_stdout = String::from_utf8(compiled.stdout).expect("compiled stdout");
     assert!(compiled_stdout.contains("# Context: reliable sync"));
+    assert!(compiled_stdout.contains("(compiled by belay, budget=2500)"));
+    assert!(!compiled_stdout.contains("profile"));
     assert!(compiled_stdout.contains("## Goals"));
     assert!(compiled_stdout.contains(&goal));
+
+    let removed_profile = belay()
+        .args([
+            "context",
+            "compile",
+            "reliable sync",
+            "--profile",
+            "task-start",
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("reject removed profile option");
+    assert_eq!(removed_profile.status.code(), Some(2));
+    assert!(
+        String::from_utf8(removed_profile.stderr)
+            .expect("profile rejection stderr")
+            .contains("unexpected argument '--profile'")
+    );
 }
 
 #[test]
