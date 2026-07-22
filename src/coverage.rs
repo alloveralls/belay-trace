@@ -347,11 +347,10 @@ fn has_fresh_pass(
 ) -> bool {
     let mut statement = match connection.prepare(
         "
-        SELECT evidence.kind, evidence.verdict, evidence.commit_sha
+        SELECT evidence.kind, evidence.verdict, evidence.commit_sha, evidence.captured_at
         FROM evidence_links links
         JOIN evidence ON evidence.id = links.evidence_id
         WHERE links.target = ?1 AND links.relation = 'verifies'
-        ORDER BY evidence.captured_at DESC
         ",
     ) {
         Ok(statement) => statement,
@@ -362,19 +361,21 @@ fn has_fresh_pass(
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
         ))
     }) {
         Ok(rows) => rows,
         Err(_) => return false,
     };
-    rows.filter_map(Result::ok).any(|(kind, verdict, commit)| {
-        verdict == "pass"
-            && kinds.is_none_or(|kinds| kinds.contains(&kind.as_str()))
-            && matches!(
-                evidence::freshness(repository, head, &commit),
-                Freshness::Fresh
-            )
-    })
+    rows.filter_map(Result::ok)
+        .any(|(kind, verdict, commit, captured_at)| {
+            verdict == "pass"
+                && kinds.is_none_or(|kinds| kinds.contains(&kind.as_str()))
+                && matches!(
+                    evidence::freshness(repository, head, &commit, &captured_at),
+                    Freshness::Fresh
+                )
+        })
 }
 
 fn render_report(rows: Vec<GoalCoverage>) -> CoverageReport {

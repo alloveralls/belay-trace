@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use chrono::{DateTime, Local, SecondsFormat};
+use chrono::{DateTime, Local, SecondsFormat, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -177,7 +177,7 @@ pub fn status(repository: &Repository, target: &str) -> Result<EvidenceStatus, B
             FROM evidence_links links
             JOIN evidence ON evidence.id = links.evidence_id
             WHERE links.target = ?1
-            ORDER BY evidence.captured_at DESC, evidence.display_id DESC
+            ORDER BY julianday(evidence.captured_at) DESC, evidence.display_id DESC
             ",
         )
         .map_err(|source| BelayError::sqlite(&database_path, source))?;
@@ -201,13 +201,14 @@ pub fn status(repository: &Repository, target: &str) -> Result<EvidenceStatus, B
         .into_iter()
         .map(
             |(display_id, kind, verdict, source, captured_at, commit_sha, summary)| {
+                let freshness = freshness(repository, head.as_deref(), &commit_sha, &captured_at);
                 EvidenceStatusRecord {
                     display_id,
                     kind,
                     verdict,
                     source,
                     captured_at,
-                    freshness: freshness(repository, head.as_deref(), &commit_sha),
+                    freshness,
                     commit_sha,
                     summary,
                 }
@@ -295,29 +296,29 @@ pub fn stale_doctor_details(
         .map_err(|source| BelayError::sqlite(database_path, source))?;
     let mut details = Vec::new();
     for (display_id, entry_type, status) in entries {
-        let passing_commit: Option<String> = connection
+        let passing_evidence: Option<(String, String)> = connection
             .query_row(
                 "
-                SELECT evidence.commit_sha
+                SELECT evidence.commit_sha, evidence.captured_at
                 FROM evidence_links links
                 JOIN evidence ON evidence.id = links.evidence_id
                 WHERE links.target = ?1 AND links.relation = 'verifies'
                   AND evidence.verdict = 'pass'
-                ORDER BY evidence.captured_at DESC
+                ORDER BY julianday(evidence.captured_at) DESC, evidence.display_id DESC
                 LIMIT 1
                 ",
                 [display_id.as_str()],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(|source| BelayError::sqlite(database_path, source))?;
-        let Some(commit) = passing_commit else {
+        let Some((commit, captured_at)) = passing_evidence else {
             details.push(format!(
                 "{display_id} ({entry_type}/{status}) has no passing evidence"
             ));
             continue;
         };
-        match freshness(repository, head.as_deref(), &commit) {
+        match freshness(repository, head.as_deref(), &commit, &captured_at) {
             Freshness::Fresh => {}
             Freshness::Stale(reason) => details.push(format!(
                 "{display_id} ({entry_type}/{status}) depends on stale evidence ({reason})"
@@ -607,12 +608,34 @@ pub fn current_head(repository: &Repository) -> Result<String, BelayError> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-pub fn freshness(repository: &Repository, head: Option<&str>, commit_sha: &str) -> Freshness {
+pub fn freshness(
+    repository: &Repository,
+    head: Option<&str>,
+    commit_sha: &str,
+    captured_at: &str,
+) -> Freshness {
+    freshness_at(repository, head, commit_sha, captured_at, Utc::now())
+}
+
+fn freshness_at(
+    repository: &Repository,
+    head: Option<&str>,
+    commit_sha: &str,
+    captured_at: &str,
+    now: DateTime<Utc>,
+) -> Freshness {
+    let Ok(captured_at) = DateTime::parse_from_rfc3339(captured_at) else {
+        return Freshness::Unknown("captured-at invalid".to_owned());
+    };
+    let captured_at = captured_at.with_timezone(&Utc);
+    if captured_at > now {
+        return Freshness::Unknown("captured-at is in the future".to_owned());
+    }
     if commit_sha == "unknown" {
-        return Freshness::Unknown("commit unknown".to_owned());
+        return time_freshness(repository, captured_at, now, "commit unknown");
     }
     let Some(head) = head else {
-        return Freshness::Unknown("git unavailable".to_owned());
+        return time_freshness(repository, captured_at, now, "git unavailable");
     };
     if commit_sha == head {
         return Freshness::Fresh;
@@ -633,7 +656,29 @@ pub fn freshness(repository: &Repository, head: Option<&str>, commit_sha: &str) 
                 Freshness::Stale(format!("{behind} commits behind"))
             }
         }
-        _ => Freshness::Stale("not HEAD".to_owned()),
+        Ok(_) => Freshness::Stale("not HEAD".to_owned()),
+        Err(_) => time_freshness(repository, captured_at, now, "git unavailable"),
+    }
+}
+
+fn time_freshness(
+    repository: &Repository,
+    captured_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+    fallback_reason: &str,
+) -> Freshness {
+    let Some(threshold) =
+        chrono::Duration::try_days(i64::from(repository.config.verify.stale_after_days))
+    else {
+        return Freshness::Fresh;
+    };
+    if now.signed_duration_since(captured_at) <= threshold {
+        Freshness::Fresh
+    } else {
+        Freshness::Stale(format!(
+            "older than {} days ({fallback_reason})",
+            repository.config.verify.stale_after_days
+        ))
     }
 }
 
@@ -670,4 +715,110 @@ fn validation<T>(message: impl Into<String>) -> Result<T, BelayError> {
     Err(BelayError::Validation {
         message: message.into(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    fn repository(stale_after_days: u32) -> Repository {
+        let mut config = Config::default();
+        config.verify.stale_after_days = stale_after_days;
+        Repository {
+            root: std::env::temp_dir(),
+            belay_dir: std::env::temp_dir().join(".belay"),
+            config,
+        }
+    }
+
+    fn utc(value: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(value)
+            .expect("valid timestamp")
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn time_fallback_is_inclusive_and_applies_when_git_or_commit_is_unavailable() {
+        let repository = repository(14);
+        let now = utc("2026-07-22T00:00:00Z");
+
+        assert_eq!(
+            freshness_at(&repository, None, "abc123", "2026-07-08T00:00:00Z", now),
+            Freshness::Fresh
+        );
+        assert!(matches!(
+            freshness_at(
+                &repository,
+                Some("head"),
+                "unknown",
+                "2026-07-07T23:59:59Z",
+                now
+            ),
+            Freshness::Stale(reason) if reason == "older than 14 days (commit unknown)"
+        ));
+    }
+
+    #[test]
+    fn time_fallback_preserves_subsecond_precision_at_the_boundary() {
+        let repository = repository(14);
+        let now = utc("2026-07-22T00:00:00.500000000Z");
+
+        assert_eq!(
+            freshness_at(
+                &repository,
+                None,
+                "abc123",
+                "2026-07-08T00:00:00.500000000Z",
+                now
+            ),
+            Freshness::Fresh
+        );
+        assert!(matches!(
+            freshness_at(
+                &repository,
+                None,
+                "abc123",
+                "2026-07-08T00:00:00.499999999Z",
+                now
+            ),
+            Freshness::Stale(_)
+        ));
+    }
+
+    #[test]
+    fn time_fallback_does_not_claim_invalid_or_future_evidence_is_fresh() {
+        let repository = repository(14);
+        let now = utc("2026-07-22T00:00:00Z");
+
+        assert_eq!(
+            freshness_at(&repository, Some("head"), "head", "invalid", now),
+            Freshness::Unknown("captured-at invalid".to_owned())
+        );
+        assert_eq!(
+            freshness_at(
+                &repository,
+                Some("head"),
+                "head",
+                "2026-07-22T00:00:01Z",
+                now
+            ),
+            Freshness::Unknown("captured-at is in the future".to_owned())
+        );
+    }
+
+    #[test]
+    fn matching_head_takes_precedence_over_evidence_age() {
+        let repository = repository(14);
+        assert_eq!(
+            freshness_at(
+                &repository,
+                Some("head"),
+                "head",
+                "2020-01-01T00:00:00Z",
+                utc("2026-07-22T00:00:00Z")
+            ),
+            Freshness::Fresh
+        );
+    }
 }

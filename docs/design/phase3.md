@@ -140,6 +140,10 @@ fresh: 1 / 3
   **HEAD との一致 / 不一致 + 経過コミット数** で行う
   (git履歴の解析は `git merge-base` / `rev-list --count` を
   subprocess で使い、git がない環境では時刻ベースへフォールバック)
+- 時刻ベースの基準は Evidence の `captured_at` と評価時の UTC 現在時刻とする。
+  HEAD を取得できない、`commit_sha` が `unknown`、または git を実行できない場合に
+  のみ使用し、`stale-after-days` 以内(境界を含む)を fresh とする。git が実行できても
+  commit を比較できない場合はフォールバックせず stale とする
 - `config.toml` でポリシーを設定できる
 
 ```toml
