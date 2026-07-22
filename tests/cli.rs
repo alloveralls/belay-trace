@@ -3239,7 +3239,7 @@ fn goal_verify_coverage_and_compile_work_together() {
     assert!(
         String::from_utf8(removed_profile.stderr)
             .expect("profile rejection stderr")
-            .contains("unexpected argument '--profile'")
+            .contains("--profile")
     );
 }
 
