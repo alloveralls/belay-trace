@@ -183,7 +183,7 @@ const CONTEXT_AFTER_HELP: &str = r#"Behavior and Side Effects:
 
 Examples:
   belay context "implement repository sync" --format agent --budget 2500
-  belay context compile "implement repository sync" --profile task-start --budget 4000
+  belay context compile "implement repository sync" --budget 4000
 
 Exit Status:
   0  Context generated
@@ -558,20 +558,9 @@ struct ContextArgs {
     #[arg(long, default_value_t = 2500)]
     budget: usize,
 
-    /// Context compiler profile.
-    #[arg(long, value_enum, default_value_t = CliCompileProfile::TaskStart)]
-    profile: CliCompileProfile,
-
     /// Explicit seed entry for context compile.
     #[arg(long = "seed")]
     seeds: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum CliCompileProfile {
-    TaskStart,
-    Review,
-    GoalDrafting,
 }
 
 #[derive(Debug, Args)]
@@ -864,15 +853,9 @@ fn execute(cli: Cli, current_dir: &Path) -> Result<(), BelayError> {
             };
             let (compile, task) = parse_context_task(&arguments.task)?;
             let bundle = if compile {
-                let profile = match arguments.profile {
-                    CliCompileProfile::TaskStart => context::CompileProfile::TaskStart,
-                    CliCompileProfile::Review => context::CompileProfile::Review,
-                    CliCompileProfile::GoalDrafting => context::CompileProfile::GoalDrafting,
-                };
                 context::compile(
                     &repository,
                     task,
-                    profile,
                     format,
                     arguments.budget,
                     &arguments.seeds,
