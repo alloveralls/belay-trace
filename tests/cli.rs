@@ -3222,3 +3222,85 @@ fn goal_verify_coverage_and_compile_work_together() {
     assert!(compiled_stdout.contains("## Goals"));
     assert!(compiled_stdout.contains(&goal));
 }
+
+#[test]
+fn time_based_freshness_drives_status_doctor_and_coverage_without_git_metadata() {
+    let temporary = initialize_repository();
+    let goal = created_id(
+        &belay()
+            .args(["add", "goal", "--title", "Time-based freshness"])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add goal"),
+    );
+    let activated = belay()
+        .args(["status", &goal, "active"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("activate goal");
+    assert!(activated.status.success(), "{activated:?}");
+
+    let recorded = belay()
+        .args([
+            "verify",
+            "record",
+            "--kind",
+            "test",
+            "--verdict",
+            "pass",
+            "--commit",
+            "unknown",
+            "--captured-at",
+            "2000-01-01T00:00:00Z",
+            "--source",
+            "historical test",
+            "--summary",
+            "old passing evidence",
+            "--verifies",
+            &goal,
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("record old evidence");
+    assert!(recorded.status.success(), "{recorded:?}");
+
+    let status = belay()
+        .args(["verify", "status", &goal])
+        .current_dir(temporary.path())
+        .output()
+        .expect("show evidence status");
+    assert!(status.status.success(), "{status:?}");
+    assert!(
+        String::from_utf8(status.stdout)
+            .expect("status stdout")
+            .contains("stale (older than 14 days (commit unknown))")
+    );
+
+    let doctor = belay()
+        .arg("doctor")
+        .current_dir(temporary.path())
+        .output()
+        .expect("check stale evidence");
+    assert!(doctor.status.success(), "{doctor:?}");
+    assert!(
+        String::from_utf8(doctor.stdout)
+            .expect("doctor stdout")
+            .contains("depends on stale evidence (older than 14 days (commit unknown))")
+    );
+
+    let coverage = belay()
+        .args(["coverage", "--format", "json"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("compute coverage");
+    assert!(coverage.status.success(), "{coverage:?}");
+    let report: serde_json::Value =
+        serde_json::from_slice(&coverage.stdout).expect("coverage JSON");
+    let test_dimension = report["dimensions"]
+        .as_array()
+        .expect("coverage dimensions")
+        .iter()
+        .find(|dimension| dimension["name"] == "test")
+        .expect("test dimension");
+    assert_eq!(test_dimension["verified"]["covered"], 0);
+}
