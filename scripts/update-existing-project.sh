@@ -93,7 +93,7 @@ fi
 
 case "$belay_bin" in
     /*) ;;
-    *) belay_bin=$(CDPATH= cd -- "$(dirname -- "$belay_bin")" && pwd)/$(basename -- "$belay_bin") ;;
+    *) belay_bin="$(CDPATH= cd -- "$(dirname -- "$belay_bin")" && pwd)/$(basename -- "$belay_bin")" ;;
 esac
 
 if [ ! -x "$belay_bin" ]; then

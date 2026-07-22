@@ -13,6 +13,7 @@ fn belay() -> Command {
     Command::new(env!("CARGO_BIN_EXE_belay"))
 }
 
+#[cfg(unix)]
 fn update_existing_project_script() -> Command {
     let mut command = Command::new("sh");
     command.arg(concat!(
@@ -191,6 +192,7 @@ fn repeated_init_refreshes_generated_assets_without_activating_them() {
     assert!(!temporary.path().join(".agents").exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn update_script_refreshes_only_previously_active_integrations() {
     let temporary = tempdir().expect("create temp directory");
@@ -216,9 +218,17 @@ fn update_script_refreshes_only_previously_active_integrations() {
     )
     .expect("stale installed skill");
 
+    let tool_directory = temporary.path().join("tool directory");
+    fs::create_dir(&tool_directory).expect("create spaced tool directory");
+    std::os::unix::fs::symlink(
+        env!("CARGO_BIN_EXE_belay"),
+        tool_directory.join("belay executable"),
+    )
+    .expect("link belay through a spaced path");
+
     let updated = update_existing_project_script()
-        .args(["--belay", env!("CARGO_BIN_EXE_belay")])
-        .arg(temporary.path())
+        .args(["--belay", "tool directory/belay executable", "."])
+        .current_dir(temporary.path())
         .output()
         .expect("update existing project");
     assert!(updated.status.success(), "{updated:?}");
@@ -245,6 +255,7 @@ fn update_script_refreshes_only_previously_active_integrations() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn update_script_refuses_to_initialize_without_explicit_opt_in() {
     let temporary = tempdir().expect("create temp directory");
