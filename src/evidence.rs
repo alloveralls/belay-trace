@@ -667,8 +667,12 @@ fn time_freshness(
     now: DateTime<Utc>,
     fallback_reason: &str,
 ) -> Freshness {
-    let threshold_seconds = i64::from(repository.config.verify.stale_after_days) * 86_400;
-    if now.signed_duration_since(captured_at).num_seconds() <= threshold_seconds {
+    let Some(threshold) =
+        chrono::Duration::try_days(i64::from(repository.config.verify.stale_after_days))
+    else {
+        return Freshness::Fresh;
+    };
+    if now.signed_duration_since(captured_at) <= threshold {
         Freshness::Fresh
     } else {
         Freshness::Stale(format!(
@@ -752,6 +756,33 @@ mod tests {
                 now
             ),
             Freshness::Stale(reason) if reason == "older than 14 days (commit unknown)"
+        ));
+    }
+
+    #[test]
+    fn time_fallback_preserves_subsecond_precision_at_the_boundary() {
+        let repository = repository(14);
+        let now = utc("2026-07-22T00:00:00.500000000Z");
+
+        assert_eq!(
+            freshness_at(
+                &repository,
+                None,
+                "abc123",
+                "2026-07-08T00:00:00.500000000Z",
+                now
+            ),
+            Freshness::Fresh
+        );
+        assert!(matches!(
+            freshness_at(
+                &repository,
+                None,
+                "abc123",
+                "2026-07-08T00:00:00.499999999Z",
+                now
+            ),
+            Freshness::Stale(_)
         ));
     }
 
