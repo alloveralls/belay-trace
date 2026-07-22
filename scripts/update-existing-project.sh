@@ -129,18 +129,19 @@ for requested_project in "$@"; do
     fi
 
     echo "Updating $project"
-    (cd "$project" && "$belay_bin" init)
+    set -- init
     if [ "$project_update_agents" = true ]; then
-        (cd "$project" && "$belay_bin" init --update-agents)
+        set -- "$@" --update-agents
     fi
     if [ "$project_install_codex" = true ]; then
-        (cd "$project" && "$belay_bin" init --install-skill codex)
+        set -- "$@" --install-skill codex
     fi
     if [ "$project_install_claude" = true ]; then
-        (cd "$project" && "$belay_bin" init --install-skill claude)
+        set -- "$@" --install-skill claude
     fi
     if [ "$reset_state" = true ]; then
-        (cd "$project" && "$belay_bin" init --reset-state)
+        set -- "$@" --reset-state
     fi
+    (cd "$project" && "$belay_bin" "$@")
     (cd "$project" && "$belay_bin" doctor)
 done
