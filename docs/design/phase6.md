@@ -120,6 +120,8 @@ Tier 2 以上では実装開始前に必ず作る。
 
 ### Delivery Map
 
+Task ID と Success Criterion ID の採番、スコープ、完全修飾参照は
+[ID and reference standard](../id-reference-standard.md) に従う。
 Task ID は Plan 内で安定させ、並べ替えや状態変更で再採番しない。
 
 ```markdown
@@ -127,10 +129,10 @@ Task ID は Plan 内で安定させ、並べ替えや状態変更で再採番し
 
 | ID | Goal item | Outcome / Task | Actor | State | Verification / Evidence |
 | --- | --- | --- | --- | --- | --- |
-| T-1 | SC-1 | 競合時の動作を設計する | AI | verified | DEC-... |
-| T-2 | SC-1 | 双方変更を検出する | AI | implemented | test pending |
-| T-3 | SC-1 | 上書きしないことを検証する | AI | not-started | cargo test ... |
-| T-4 | SC-2 | 既定動作を決める | Human | blocked | human decision |
+| T-001 | SC-001 | 競合時の動作を設計する | AI | verified | DEC-... |
+| T-002 | SC-001 | 双方変更を検出する | AI | implemented | test pending |
+| T-003 | SC-001 | 上書きしないことを検証する | AI | not-started | cargo test ... |
+| T-004 | SC-002 | 既定動作を決める | Human | blocked | human decision |
 ```
 
 初期状態は次の 6 種に限定する。
@@ -191,9 +193,9 @@ Current state
 - blocked: 1/5
 
 Goal coverage
-- SC-1: verified
-- SC-2: partial
-- SC-3: not started
+- SC-001: verified
+- SC-002: partial
+- SC-003: not started
 
 Changed assumptions
 - ...

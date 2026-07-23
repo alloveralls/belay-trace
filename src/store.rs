@@ -155,6 +155,7 @@ pub fn link(
     let transaction = begin_immediate(&mut connection, &database_path)?;
     let from_id = resolve_internal_id(&transaction, &database_path, from)?;
     let to_id = resolve_internal_id(&transaction, &database_path, &to_reference.display_id)?;
+    validate_reference_fragment(&transaction, &database_path, &to_reference)?;
     let expected_mirror_hash =
         ensure_no_mirror_drift(repository, &transaction, &database_path, from_id)?;
     let inserted = transaction
@@ -729,6 +730,7 @@ pub(crate) fn replace_links(
     for link in links {
         let target = parse_entry_reference_id(&link.id)?;
         let target_id = resolve_internal_id(connection, database_path, &target.display_id)?;
+        validate_reference_fragment(connection, database_path, &target)?;
         let metadata =
             serde_json::to_string(&link.metadata).map_err(|source| BelayError::Validation {
                 message: format!("could not serialize link metadata: {source}"),
@@ -751,6 +753,35 @@ pub(crate) fn replace_links(
             .map_err(|source| BelayError::sqlite(database_path, source))?;
     }
     Ok(())
+}
+
+pub(crate) fn validate_reference_fragment(
+    connection: &Connection,
+    database_path: &Path,
+    reference: &crate::entry::EntryReferenceParts,
+) -> Result<(), BelayError> {
+    let Some(fragment) = reference.fragment.as_deref() else {
+        return Ok(());
+    };
+    let (entry_type, body) = connection
+        .query_row(
+            "SELECT type, body FROM entries WHERE display_id = ?1",
+            [&reference.display_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .map_err(|source| BelayError::sqlite(database_path, source))?;
+    let entry_type = entry_type.parse()?;
+    match crate::trace_ids::fragment_match_count(entry_type, &body, fragment) {
+        1 => Ok(()),
+        0 => validation(format!(
+            "fragment #{fragment} was not found in {}",
+            reference.display_id
+        )),
+        count => validation(format!(
+            "fragment #{fragment} is ambiguous in {} ({count} definitions)",
+            reference.display_id
+        )),
+    }
 }
 
 pub(crate) fn serialize_metadata(

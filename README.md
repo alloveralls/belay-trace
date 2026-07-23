@@ -197,6 +197,10 @@ belay verify status GOAL-20260607T085900-001-reliable-repository-sync
 ```
 
 Evidence is mirrored to `.belay/evidence/YYYY-MM.ndjson` and indexed in SQLite.
+Success Criterion and Delivery Map task IDs use document-local `SC-NNN` and
+`T-NNN` forms. Cross-entry references must be fully qualified, for example
+`GOAL-...#sc-001` and `PLN-...#t-001`; see the
+[ID and reference standard](docs/id-reference-standard.md).
 Compute Goal Coverage with traceability and verified counts kept separate:
 
 ```sh

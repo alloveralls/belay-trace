@@ -1110,6 +1110,97 @@ fn show_link_and_status_use_display_ids_and_keep_mirror_in_sync() {
 }
 
 #[test]
+fn links_and_evidence_require_defined_goal_and_plan_fragments() {
+    let temporary = initialize_repository();
+    let goal = created_id(
+        &belay()
+            .args(["add", "goal", "--title", "Stable local IDs"])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add goal"),
+    );
+    let plan_body = "## Delivery Map\n\n| ID | Goal item | Outcome / Task | Actor | State | Verification / Evidence |\n| --- | --- | --- | --- | --- | --- |\n| T-001 | SC-001 | Preserve IDs | AI | implemented | pending |\n";
+    let plan = created_id(
+        &belay()
+            .args([
+                "add",
+                "plan",
+                "--title",
+                "Deliver stable local IDs",
+                "--body",
+                plan_body,
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add plan"),
+    );
+    let work = created_id(
+        &belay()
+            .args([
+                "add",
+                "work",
+                "--title",
+                "Implement stable local IDs",
+                "--body",
+                "Implementation",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add work"),
+    );
+
+    let criterion = format!("{goal}#sc-001");
+    let task = format!("{plan}#t-001");
+    for (target, relation) in [(&criterion, "fulfills"), (&task, "implements")] {
+        let linked = belay()
+            .args(["link", &work, target, "--relation", relation])
+            .current_dir(temporary.path())
+            .output()
+            .expect("link fragment");
+        assert!(linked.status.success(), "{linked:?}");
+    }
+
+    let missing = format!("{goal}#sc-999");
+    let rejected_link = belay()
+        .args(["link", &work, &missing, "--relation", "fulfills"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("reject missing link fragment");
+    assert_eq!(rejected_link.status.code(), Some(4));
+    assert!(
+        String::from_utf8(rejected_link.stderr)
+            .expect("link stderr")
+            .contains("fragment #sc-999 was not found")
+    );
+
+    let rejected_evidence = belay()
+        .args([
+            "verify",
+            "record",
+            "--kind",
+            "test",
+            "--verdict",
+            "pass",
+            "--source",
+            "cargo test",
+            "--summary",
+            "fragment validation",
+            "--verifies",
+            &missing,
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("reject missing evidence fragment");
+    assert_eq!(rejected_evidence.status.code(), Some(4));
+    assert_eq!(
+        fs::read_dir(temporary.path().join(".belay/evidence"))
+            .expect("read evidence directory")
+            .count(),
+        0
+    );
+}
+
+#[test]
 fn link_and_status_validation_do_not_mutate_entries() {
     let temporary = initialize_repository();
     let decision = created_id(
