@@ -773,6 +773,48 @@ struct ProcessOutput {
     stderr: Captured,
 }
 
+const UNTRUSTED_GIT_ENVIRONMENT: &[&str] = &[
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_DIFF_OPTS",
+    "GIT_DIR",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_EXEC_PATH",
+    "GIT_EXTERNAL_DIFF",
+    "GIT_GLOB_PATHSPECS",
+    "GIT_GRAFT_FILE",
+    "GIT_ICASE_PATHSPECS",
+    "GIT_INDEX_FILE",
+    "GIT_LITERAL_PATHSPECS",
+    "GIT_NAMESPACE",
+    "GIT_NOGLOB_PATHSPECS",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_TRACE",
+    "GIT_TRACE2",
+    "GIT_TRACE2_EVENT",
+    "GIT_TRACE2_PERF",
+    "GIT_TRACE_PACK_ACCESS",
+    "GIT_TRACE_PACKET",
+    "GIT_TRACE_PERFORMANCE",
+    "GIT_TRACE_SETUP",
+    "GIT_TRACE_SHALLOW",
+    "GIT_WORK_TREE",
+];
+
+fn remove_untrusted_git_environment(command: &mut Command) {
+    for variable in UNTRUSTED_GIT_ENVIRONMENT {
+        command.env_remove(*variable);
+    }
+}
+
 fn capture(mut reader: impl Read, limit: usize) -> std::io::Result<Captured> {
     let mut kept = Vec::with_capacity(limit.min(8192));
     let mut buffer = [0_u8; 8192];
@@ -819,12 +861,8 @@ fn run_git(
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_PAGER", "cat")
         .env("PAGER", "cat")
-        .env("LC_ALL", "C")
-        .env_remove("GIT_EXTERNAL_DIFF")
-        .env_remove("GIT_DIFF_OPTS")
-        .env_remove("GIT_CONFIG_COUNT")
-        .env_remove("GIT_CONFIG_KEY_0")
-        .env_remove("GIT_CONFIG_VALUE_0");
+        .env("LC_ALL", "C");
+    remove_untrusted_git_environment(&mut command);
     let mut child = command
         .spawn()
         .map_err(|error| GitProvenanceError::Git(error.to_string()))?;
@@ -1175,5 +1213,23 @@ mod tests {
             detail.content,
             FileContent::Omitted { size: 4096, .. }
         ));
+    }
+
+    #[test]
+    fn git_commands_explicitly_remove_repository_and_behavior_overrides() {
+        let mut command = Command::new("git");
+        for variable in UNTRUSTED_GIT_ENVIRONMENT {
+            command.env(*variable, "inherited-value");
+        }
+        remove_untrusted_git_environment(&mut command);
+        let environment = command.get_envs().collect::<Vec<_>>();
+        for variable in UNTRUSTED_GIT_ENVIRONMENT {
+            assert!(
+                environment.iter().any(|(key, value)| {
+                    *key == std::ffi::OsStr::new(*variable) && value.is_none()
+                }),
+                "{variable} was not explicitly removed"
+            );
+        }
     }
 }

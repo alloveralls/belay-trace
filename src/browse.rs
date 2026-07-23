@@ -664,6 +664,9 @@ impl Snapshot {
             .map_err(|source| BelayError::sqlite(&database_path, source))?;
         drop(backup);
         crate::database::verify_schema_health(&connection, &database_path)?;
+        connection
+            .pragma_update(None, "query_only", true)
+            .map_err(|source| BelayError::sqlite(":memory:", source))?;
         let report = crate::reconcile::doctor(repository);
         let has_drift = report.has_drift;
         let diagnostics = report
@@ -1643,6 +1646,18 @@ mod tests {
         .expect("create goal");
         let database_before = fs::read(repository.database_path()).expect("read database before");
         let snapshot = Snapshot::build(&repository).expect("build snapshot");
+        let query_only = snapshot
+            .connection
+            .query_row("PRAGMA query_only", [], |row| row.get::<_, i64>(0))
+            .expect("read query_only state");
+        assert_eq!(query_only, 1);
+        assert!(
+            snapshot
+                .connection
+                .execute("DELETE FROM entries", [])
+                .is_err(),
+            "snapshot connection must reject writes"
+        );
         let graph = graph_neighbors(
             &snapshot.connection,
             &repository.root,
