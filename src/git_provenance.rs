@@ -684,7 +684,7 @@ fn parse_raw_diff(
         } else {
             old_path.clone()
         };
-        if files.len() > max_files {
+        if files.len() >= max_files {
             return Ok((files, true));
         }
         let old_mode = parts[0].trim_start_matches(':').to_owned();
