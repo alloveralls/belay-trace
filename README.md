@@ -157,6 +157,29 @@ sections before the ranked context.
 Context uses direct links and a deterministic token estimate. Embeddings are not
 required for the v1 workflow.
 
+## Local Trace Browser
+
+Launch a read-only provenance browser bound only to loopback:
+
+```sh
+belay browse
+belay browse --port 8765 --open
+```
+
+The command prints the assigned `127.0.0.1` URL. Library search reuses the same
+FTS5/BM25 and filter semantics as `belay search`; Reader shows sanitized
+Markdown, typed inbound/outbound links, linked Plan Delivery Map tasks and Goal
+items, and every Evidence verdict. Explore starts with Goals and expands one
+neighborhood at a time from Entry to Evidence to its captured commit and files
+changed in that commit. Reader deep links can still start the graph from any
+Entry. Changed files are Git history context, not a claim that they are Entry
+source files or the scope verified by Evidence.
+
+Browse copies SQLite into a single in-memory generation. Reload builds a new
+generation before swapping it in, and a failed reload leaves the prior snapshot
+active. The server does not edit managed Markdown, SQLite, Evidence, revisions,
+or sync baselines. It uses bundled assets and needs no runtime network access.
+
 ## Verify And Cover Goals
 
 Record append-only Evidence for existing verification systems:

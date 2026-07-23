@@ -26,3 +26,21 @@ jobs:
           mkdir -p .belay/state .belay/evidence
           cargo run --locked -- rebuild
           cargo run --locked -- doctor
+
+  playwright:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.87"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: cargo build --locked
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e

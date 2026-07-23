@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod browse;
 pub mod cli;
 pub mod config;
 pub mod context;
@@ -8,6 +9,7 @@ pub mod entry;
 pub mod error;
 pub mod evidence;
 pub mod export;
+pub mod git_provenance;
 pub mod goal;
 pub mod markdown;
 pub mod reconcile;

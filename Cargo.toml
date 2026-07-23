@@ -1,6 +1,6 @@
 [package]
 name = "belay-trace"
-version = "0.2.0"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.87"
 description = "Local-first trace and context harness for AI-assisted software work"
@@ -12,16 +12,19 @@ name = "belay"
 path = "src/main.rs"
 
 [dependencies]
+ammonia = "=4.1.4"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 clap = { version = "4.6.1", features = ["derive", "wrap_help"] }
-pulldown-cmark = { version = "0.13.4", default-features = false }
-rusqlite = { version = "=0.39.0", features = ["bundled"] }
+pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
+rusqlite = { version = "=0.39.0", features = ["backup", "bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9.34"
 sha2 = "0.10.9"
 thiserror = "2.0"
+tiny_http = "=0.12.0"
 toml = "1.1.2"
+webbrowser = "=1.2.1"
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.4", features = ["fs"] }

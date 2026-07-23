@@ -43,6 +43,7 @@ fn top_level_help_describes_commands_workflow_and_exit_categories() {
         "status",
         "sync",
         "search",
+        "browse",
         "context",
         "doctor",
         "rebuild",
@@ -55,8 +56,8 @@ fn top_level_help_describes_commands_workflow_and_exit_categories() {
 #[test]
 fn every_command_help_has_the_required_structure() {
     for command in [
-        "init", "add", "link", "status", "show", "search", "context", "sync", "rebuild", "export",
-        "doctor",
+        "init", "add", "link", "status", "show", "search", "browse", "context", "sync", "rebuild",
+        "export", "doctor",
     ] {
         let output = belay()
             .args([command, "--help"])
@@ -81,6 +82,43 @@ fn every_command_help_has_the_required_structure() {
             "{command} help is missing Arguments or Options"
         );
     }
+}
+
+#[test]
+fn browse_help_is_loopback_only_and_uninitialized_is_exit_three() {
+    let help = belay()
+        .args(["browse", "--help"])
+        .output()
+        .expect("run browse help");
+    assert!(help.status.success());
+    let stdout = String::from_utf8(help.stdout).expect("help is UTF-8");
+    assert!(stdout.contains("127.0.0.1"));
+    assert!(stdout.contains("--port"));
+    assert!(stdout.contains("--open"));
+    assert!(!stdout.contains("--host"));
+
+    let temporary = tempdir().expect("create temporary repository");
+    fs::create_dir(temporary.path().join(".git")).expect("create repository marker");
+    let output = belay()
+        .arg("browse")
+        .current_dir(temporary.path())
+        .output()
+        .expect("run browse before init");
+    assert_eq!(output.status.code(), Some(3));
+}
+
+#[test]
+fn browse_fixed_port_bind_failure_is_exit_six() {
+    let temporary = initialize_repository();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve loopback port");
+    let port = listener.local_addr().expect("read bound address").port();
+    let output = belay()
+        .args(["browse", "--port", &port.to_string()])
+        .current_dir(temporary.path())
+        .output()
+        .expect("run Browse on occupied port");
+    assert_eq!(output.status.code(), Some(6));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("could not bind"));
 }
 
 #[test]
