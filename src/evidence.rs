@@ -488,7 +488,7 @@ fn validate_target(repository: &Repository, target: &str) -> Result<(), BelayErr
     let exists: Option<i64> = connection
         .query_row(
             "SELECT id FROM entries WHERE display_id = ?1",
-            [reference.display_id],
+            [&reference.display_id],
             |row| row.get(0),
         )
         .optional()
@@ -496,6 +496,7 @@ fn validate_target(repository: &Repository, target: &str) -> Result<(), BelayErr
     if exists.is_none() {
         return validation(format!("evidence target {target} was not found"));
     }
+    crate::store::validate_reference_fragment(&connection, &database_path, &reference)?;
     Ok(())
 }
 
