@@ -55,9 +55,19 @@ pub fn search(
     repository: &Repository,
     request: &SearchRequest,
 ) -> Result<Vec<SearchResult>, BelayError> {
-    validate_request(request)?;
     let database_path = repository.database_path();
     let connection = crate::database::open(&database_path)?;
+    search_connection(&connection, &database_path, request)
+}
+
+/// Search a caller-owned SQLite generation. Browse uses this entry point so its
+/// results have exactly the same FTS5/BM25 and filter semantics as the CLI.
+pub fn search_connection(
+    connection: &Connection,
+    database_path: &std::path::Path,
+    request: &SearchRequest,
+) -> Result<Vec<SearchResult>, BelayError> {
+    validate_request(request)?;
     let exact_id = match &request.display_id {
         Some(display_id) => Some(display_id.clone()),
         None if !request.query.trim().is_empty() => connection
@@ -67,18 +77,18 @@ pub fn search(
                 |row| row.get(0),
             )
             .optional()
-            .map_err(|source| BelayError::sqlite(&database_path, source))?,
+            .map_err(|source| BelayError::sqlite(database_path, source))?,
         None => None,
     };
 
     if let Some(display_id) = exact_id {
-        return exact_result(&connection, &database_path, request, &display_id)
+        return exact_result(connection, database_path, request, &display_id)
             .map(|result| result.into_iter().collect());
     }
     if request.query.trim().is_empty() {
-        return structured_results(&connection, &database_path, request);
+        return structured_results(connection, database_path, request);
     }
-    keyword_results(&connection, &database_path, request)
+    keyword_results(connection, database_path, request)
 }
 
 pub fn linked_results(

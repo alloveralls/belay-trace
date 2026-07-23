@@ -8,6 +8,7 @@ use std::str::FromStr;
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 use crate::agent;
+use crate::browse::{self, BrowseOptions};
 use crate::context;
 use crate::coverage;
 use crate::entry::{EntryStatus, EntryType, LinkRelation};
@@ -335,6 +336,24 @@ Exit Status:
 Related Commands:
   `belay init`, `belay sync`, and `belay rebuild`."#;
 
+const BROWSE_AFTER_HELP: &str = r#"Behavior and Side Effects:
+  Copies the current SQLite generation into an in-memory snapshot and serves a
+  read-only UI on 127.0.0.1. It never edits entries, Evidence, sync baselines, or
+  repository files. Reload atomically replaces the snapshot only after success.
+
+Examples:
+  belay browse
+  belay browse --port 8765 --open
+
+Exit Status:
+  0  Server stopped normally
+  2  Invalid invocation
+  3  Repository not initialized
+  6  Bind, snapshot, browser runtime, or server failure
+
+Related Commands:
+  `belay search`, `belay show`, and `belay doctor`."#;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "belay",
@@ -385,6 +404,12 @@ enum Command {
         after_help = SEARCH_AFTER_HELP
     )]
     Search(SearchArgs),
+
+    #[command(
+        about = "Browse trace provenance on localhost",
+        after_help = BROWSE_AFTER_HELP
+    )]
+    Browse(BrowseArgs),
 
     #[command(
         about = "Generate bounded task context",
@@ -536,6 +561,17 @@ struct SearchArgs {
     /// Maximum number of deduplicated entries to return.
     #[arg(long, default_value_t = 20)]
     limit: usize,
+}
+
+#[derive(Debug, Args)]
+struct BrowseArgs {
+    /// Fixed localhost port. Zero lets the OS choose an available port.
+    #[arg(long, default_value_t = 0)]
+    port: u16,
+
+    /// Open the assigned localhost URL in the default browser.
+    #[arg(long)]
+    open: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -844,6 +880,16 @@ fn execute(cli: Cli, current_dir: &Path) -> Result<(), BelayError> {
             let results = search::search(&repository, &request)?;
             print_search_results(&request, &results);
             Ok(())
+        }
+        Command::Browse(arguments) => {
+            let repository = repository::discover(current_dir)?;
+            browse::run(
+                &repository,
+                BrowseOptions {
+                    port: arguments.port,
+                    open: arguments.open,
+                },
+            )
         }
         Command::Context(arguments) => {
             let repository = repository::discover(current_dir)?;
