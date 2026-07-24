@@ -316,7 +316,7 @@ impl BrowseState {
                     (entry, Some(fragment))
                 });
             let fragment = fragment
-                .map(|value| format!("#{}", encode_segment(value)))
+                .map(|value| format!("#{}", encode_segment(&value.to_ascii_lowercase())))
                 .unwrap_or_default();
             body.push_str(&format!("<li><span class=\"badge relation-{}\">{}</span> <a href=\"/entries/{}{}\">{}</a></li>", escape(&target.relation), escape(&target.relation), encode_segment(entry_id), fragment, escape(&target.target)));
         }
@@ -947,7 +947,7 @@ fn link_reference_text(text: &str) -> Vec<Event<'static>> {
                     format!(
                         "/entries/{}#{}",
                         encode_segment(entry),
-                        encode_segment(fragment)
+                        encode_segment(&fragment.to_ascii_lowercase())
                     )
                 },
             )
@@ -1262,7 +1262,7 @@ fn link_html(link: &LinkView) -> String {
     let suffix = if link.fragment.is_empty() {
         String::new()
     } else {
-        format!("#{}", encode_segment(&link.fragment))
+        format!("#{}", encode_segment(&link.fragment.to_ascii_lowercase()))
     };
     format!(
         "<li><span class=\"badge relation-{}\">{}</span> <span class=\"badge type-{}\">{}</span> <a href=\"/entries/{}{}\">{} · {}</a></li>",
@@ -1715,7 +1715,7 @@ mod tests {
     #[test]
     fn fully_qualified_references_are_linked_but_code_is_not() {
         let rendered = render_markdown(
-            "See GOAL-20260723T120000-001-safe-sync#sc-001 and \
+            "See GOAL-20260723T120000-001-safe-sync#SC-001 and \
              EVD-20260723T120500-001.\n\n\
              `GOAL-20260723T120000-001-safe-sync#sc-001`",
             false,
@@ -1723,6 +1723,7 @@ mod tests {
             None,
         );
         assert!(rendered.contains("href=\"/entries/GOAL-20260723T120000-001-safe-sync#sc-001\""));
+        assert!(rendered.contains(">GOAL-20260723T120000-001-safe-sync#SC-001</a>"));
         assert!(rendered.contains("href=\"/evidence/EVD-20260723T120500-001\""));
         assert_eq!(rendered.matches("href=\"/entries/").count(), 1);
     }

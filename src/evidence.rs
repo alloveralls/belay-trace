@@ -97,7 +97,12 @@ pub fn record(repository: &Repository, input: RecordInput) -> Result<EvidenceRec
     if input.verifies.is_empty() {
         return validation("verify record requires at least one --verifies target");
     }
-    for target in &input.verifies {
+    let verifies = input
+        .verifies
+        .iter()
+        .map(|target| parse_entry_reference_id(target).map(|reference| reference.canonical_id()))
+        .collect::<Result<Vec<_>, _>>()?;
+    for target in &verifies {
         validate_target(repository, target)?;
     }
 
@@ -121,8 +126,7 @@ pub fn record(repository: &Repository, input: RecordInput) -> Result<EvidenceRec
         issuer: input.issuer,
         summary: input.summary,
         detail: input.detail,
-        links: input
-            .verifies
+        links: verifies
             .into_iter()
             .map(|target| EvidenceLink {
                 target,
@@ -166,7 +170,8 @@ pub fn import_junit(
 }
 
 pub fn status(repository: &Repository, target: &str) -> Result<EvidenceStatus, BelayError> {
-    validate_target(repository, target)?;
+    let target = parse_entry_reference_id(target)?.canonical_id();
+    validate_target(repository, &target)?;
     let database_path = repository.database_path();
     let connection = crate::database::open_read_only(&database_path)?;
     let mut statement = connection
@@ -183,7 +188,7 @@ pub fn status(repository: &Repository, target: &str) -> Result<EvidenceStatus, B
         .map_err(|source| BelayError::sqlite(&database_path, source))?;
     let head = current_head(repository).ok();
     let rows = statement
-        .query_map([target], |row| {
+        .query_map([target.as_str()], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -215,10 +220,7 @@ pub fn status(repository: &Repository, target: &str) -> Result<EvidenceStatus, B
             },
         )
         .collect();
-    Ok(EvidenceStatus {
-        target: target.to_owned(),
-        records,
-    })
+    Ok(EvidenceStatus { target, records })
 }
 
 pub fn render_status(status: &EvidenceStatus) -> String {
@@ -379,13 +381,14 @@ pub fn insert_record(
         )
         .map_err(|source| BelayError::sqlite(database_path, source))?;
     for link in &record.links {
+        let target = parse_entry_reference_id(&link.target)?.canonical_id();
         connection
             .execute(
                 "
                 INSERT OR IGNORE INTO evidence_links(evidence_id, target, relation)
                 VALUES (?1, ?2, ?3)
                 ",
-                params![internal_id, link.target, link.relation],
+                params![internal_id, target, link.relation],
             )
             .map_err(|source| BelayError::sqlite(database_path, source))?;
     }
