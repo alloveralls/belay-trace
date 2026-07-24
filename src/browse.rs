@@ -1001,13 +1001,13 @@ fn add_success_criteria_anchors(markdown: &str, html: &mut String) {
             .unwrap_or_else(|| legacy_hash.clone());
         if let Some(relative) = html[html_cursor..].find("<li>") {
             let position = html_cursor + relative;
-            let legacy_alias = (id != legacy_hash)
-                .then(|| {
-                    format!(
-                        "<span id=\"{legacy_hash}\" class=\"criterion-anchor\" aria-hidden=\"true\"></span>"
-                    )
-                })
-                .unwrap_or_default();
+            let legacy_alias = if id != legacy_hash {
+                format!(
+                    "<span id=\"{legacy_hash}\" class=\"criterion-anchor\" aria-hidden=\"true\"></span>"
+                )
+            } else {
+                String::new()
+            };
             let replacement = format!(
                 "<li id=\"{id}\"><span id=\"sc-{criterion}\" class=\"criterion-anchor\" aria-hidden=\"true\"></span>{legacy_alias}"
             );

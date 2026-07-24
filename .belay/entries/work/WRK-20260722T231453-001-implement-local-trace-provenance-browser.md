@@ -5,8 +5,8 @@ type: work
 title: Implement local trace provenance browser
 status: completed
 created_at: 2026-07-22T23:14:53+09:00
-updated_at: 2026-07-23T06:15:39+09:00
-revision: 3
+updated_at: 2026-07-24T21:44:40+09:00
+revision: 4
 tags: []
 links:
 - relation: implements
@@ -14,4 +14,4 @@ links:
 metadata: {}
 ---
 
-Implement approved Plan T-1 through T-6: read-only localhost Browse UI, atomic SQLite snapshot, shared FTS5 search, Evidence-scoped Git provenance, sanitized Reader, staged Cytoscape exploration, and locked CI/E2E verification.
+Implement approved Plan tasks PLN-20260722T225244-001-add-a-local-trace-provenance-browser#t-001 through PLN-20260722T225244-001-add-a-local-trace-provenance-browser#t-006: read-only localhost Browse UI, atomic SQLite snapshot, shared FTS5 search, Evidence-scoped Git provenance, sanitized Reader, staged Cytoscape exploration, and locked CI/E2E verification.
