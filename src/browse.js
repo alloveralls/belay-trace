@@ -16,6 +16,16 @@
   const graph = document.getElementById('graph');
   if (!graph || typeof cytoscape !== 'function') return;
   const focus = document.body.dataset.focus;
+  function graphLayout() {
+    return {
+      name: 'cose',
+      animate: false,
+      idealEdgeLength: 64,
+      nodeRepulsion: 4096,
+      componentSpacing: 80,
+      nodeDimensionsIncludeLabels: true
+    };
+  }
   const cy = cytoscape({
     container: graph,
     elements: [],
@@ -32,7 +42,7 @@
       { selector: 'node[kind = "file"]', style: { 'background-color': '#b8794d', shape: 'round-rectangle' } },
       { selector: 'edge', style: { label: 'data(label)', width: 2, 'curve-style': 'bezier', 'target-arrow-shape': 'triangle', 'font-size': 8, 'line-color': '#7a879c', 'target-arrow-color': '#7a879c' } }
     ],
-    layout: { name: 'cose', animate: false }
+    layout: graphLayout()
   });
   const loaded = new Set();
   const loading = new Set();
@@ -58,7 +68,7 @@
         }
         notice.textContent = 'Graph neighborhood truncated at the configured safety limit.';
       }
-      cy.layout({ name: 'cose', animate: false }).run();
+      cy.layout(graphLayout()).run();
     } finally {
       loading.delete(id);
       if (loading.size === 0) graph.setAttribute('aria-busy', 'false');
