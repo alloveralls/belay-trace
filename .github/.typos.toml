@@ -4,6 +4,8 @@ extend-ignore-re = ["\\{[^}]+\\}"]
 [default.extend-words]
 alloveralls = "alloveralls"
 codeowners = "codeowners"
+"COSE" = "COSE"
+cose = "cose"
 docs-ci = "docs-ci"
 gh = "gh"
 jj = "jj"
