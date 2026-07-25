@@ -20,9 +20,9 @@
     return {
       name: 'cose',
       animate: false,
-      idealEdgeLength: 64,
-      nodeRepulsion: 4096,
-      componentSpacing: 80,
+      idealEdgeLength: 48,
+      nodeRepulsion: 3072,
+      componentSpacing: 60,
       nodeDimensionsIncludeLabels: true
     };
   }
