@@ -35,28 +35,64 @@
     layout: { name: 'cose', animate: false }
   });
   const loaded = new Set();
+  const loading = new Set();
   async function expand(id) {
-    if (loaded.has(id)) return;
-    const response = await fetch('/api/explore?focus=' + encodeURIComponent(id));
-    if (!response.ok) return;
-    const data = await response.json();
-    cy.add(data.nodes.filter(n => cy.getElementById(n.data.id).empty()));
-    cy.add(data.edges.filter(e => cy.getElementById(e.data.id).empty()));
-    loaded.add(id);
-    if (data.truncated) {
-      graph.setAttribute('aria-description', 'Graph neighborhood truncated at the configured safety limit.');
-      let notice = document.querySelector('[data-graph-limit]');
-      if (!notice) {
-        notice = document.createElement('p');
-        notice.className = 'warning';
-        notice.dataset.graphLimit = 'true';
-        graph.insertAdjacentElement('beforebegin', notice);
+    if (loaded.has(id) || loading.has(id)) return;
+    loading.add(id);
+    graph.setAttribute('aria-busy', 'true');
+    try {
+      const response = await fetch('/api/explore?focus=' + encodeURIComponent(id));
+      if (!response.ok) return;
+      const data = await response.json();
+      cy.add(data.nodes.filter(n => cy.getElementById(n.data.id).empty()));
+      cy.add(data.edges.filter(e => cy.getElementById(e.data.id).empty()));
+      loaded.add(id);
+      if (data.truncated) {
+        graph.setAttribute('aria-description', 'Graph neighborhood truncated at the configured safety limit.');
+        let notice = document.querySelector('[data-graph-limit]');
+        if (!notice) {
+          notice = document.createElement('p');
+          notice.className = 'warning';
+          notice.dataset.graphLimit = 'true';
+          graph.insertAdjacentElement('beforebegin', notice);
+        }
+        notice.textContent = 'Graph neighborhood truncated at the configured safety limit.';
       }
-      notice.textContent = 'Graph neighborhood truncated at the configured safety limit.';
+      cy.layout({ name: 'cose', animate: false }).run();
+    } finally {
+      loading.delete(id);
+      if (loading.size === 0) graph.setAttribute('aria-busy', 'false');
     }
-    cy.layout({ name: 'cose', animate: false }).run();
   }
-  cy.on('tap', 'node', event => expand(event.target.id()));
-  cy.on('dbltap', 'node', event => { const href = event.target.data('href'); if (href) window.location.assign(href); });
+  // Match Cytoscape's own double-click window so a possible dbltap can cancel
+  // the deferred single-node activation before expansion starts.
+  const singleTapDelayMs = cy.multiClickDebounceTime();
+  const pendingNodeTaps = new Map();
+  function cancelPendingNodeTap(id) {
+    const timer = pendingNodeTaps.get(id);
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    pendingNodeTaps.delete(id);
+  }
+  cy.on('tap', 'node', event => {
+    const id = event.target.id();
+    cancelPendingNodeTap(id);
+    const timer = setTimeout(() => {
+      if (pendingNodeTaps.get(id) !== timer) return;
+      pendingNodeTaps.delete(id);
+      expand(id);
+    }, singleTapDelayMs);
+    pendingNodeTaps.set(id, timer);
+  });
+  cy.on('dbltap', 'node', event => {
+    const id = event.target.id();
+    cancelPendingNodeTap(id);
+    const href = event.target.data('href');
+    if (href) window.location.assign(href);
+  });
+  window.addEventListener('pagehide', () => {
+    for (const timer of pendingNodeTaps.values()) clearTimeout(timer);
+    pendingNodeTaps.clear();
+  });
   if (focus) expand(focus);
 })();

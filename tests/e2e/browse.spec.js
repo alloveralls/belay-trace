@@ -37,6 +37,15 @@ function requestStatus(url, headers) {
     request.on('error', reject);
   });
 }
+async function graphCenter(page) {
+  const box = await page.locator('#graph canvas').first().boundingBox();
+  if (!box) throw new Error('graph canvas has no bounding box');
+  return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+}
+async function waitForGraphReady(page) {
+  await expect(page.locator('#graph[aria-busy="false"]')).toBeVisible();
+  await expect.poll(() => page.locator('#graph canvas').count()).toBeGreaterThan(0);
+}
 
 test('Library, Reader, provenance, staged Explore, reload, and read-only invariant', async ({ page }) => {
   const root = mkdtempSync(join(tmpdir(), 'belay-browse-e2e-'));
@@ -65,8 +74,8 @@ test('Library, Reader, provenance, staged Explore, reload, and read-only invaria
     await expect(page.getByText(/Files below were changed/)).toBeVisible(); await page.getByRole('link', { name: 'code.txt' }).click();
     await expect(page.getByText(/No direct Entry relationship/)).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Diff' })).toBeVisible();
-    await page.goto(`${server.url}explore`); await expect(page.locator('#graph')).toBeVisible();
-    await expect.poll(() => page.locator('#graph canvas').count()).toBeGreaterThan(0);
+    await page.goto(`${server.url}explore`);
+    await waitForGraphReady(page);
     const stages = await page.evaluate(async workId => {
       const load = focus => fetch(`/api/explore?focus=${encodeURIComponent(focus)}`).then(response => response.json());
       const initial = await load('all');
@@ -84,6 +93,42 @@ test('Library, Reader, provenance, staged Explore, reload, and read-only invaria
     expect(stages.entry.nodes.some(node => node.data.kind === 'evidence')).toBe(true);
     expect(stages.evidence.nodes.some(node => node.data.kind === 'commit')).toBe(true);
     expect(stages.commit.nodes.some(node => node.data.kind === 'file')).toBe(true);
+    const goalLink = page.getByRole('link', { name: new RegExp(goal) });
+    await expect(page.getByRole('heading', { name: 'Accessible Goal list' })).toBeVisible();
+    await expect(goalLink).toBeVisible();
+    await goalLink.press('Enter');
+    await expect(page).toHaveURL(new RegExp(`/entries/${goal}$`));
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      let expansionRequests = 0;
+      const countExpansion = request => {
+        if (request.url().includes(`/api/explore?focus=entry%3A${goal}`)) expansionRequests += 1;
+      };
+      page.on('request', countExpansion);
+      await page.goto(`${server.url}explore`);
+      await waitForGraphReady(page);
+      const center = await graphCenter(page);
+      await page.mouse.dblclick(center.x, center.y, { delay: 50 });
+      await expect(page).toHaveURL(new RegExp(`/entries/${goal}$`));
+      expect(expansionRequests).toBe(0);
+      page.off('request', countExpansion);
+    }
+
+    let singleClickRequests = 0;
+    const countSingleClickExpansion = request => {
+      if (request.url().includes(`/api/explore?focus=entry%3A${goal}`)) singleClickRequests += 1;
+    };
+    page.on('request', countSingleClickExpansion);
+    await page.goto(`${server.url}explore`);
+    await waitForGraphReady(page);
+    const center = await graphCenter(page);
+    await page.mouse.click(center.x, center.y);
+    await expect.poll(() => singleClickRequests).toBe(1);
+    await page.waitForTimeout(350);
+    expect(singleClickRequests).toBe(1);
+    await expect(page).toHaveURL(`${server.url}explore`);
+    page.off('request', countSingleClickExpansion);
+
     expect(await page.evaluate(() => fetch('/api/reload', { method: 'POST' }).then(response => response.status))).toBe(403);
     renameSync(database, heldDatabase);
     await page.getByRole('button', { name: 'Reload' }).click();

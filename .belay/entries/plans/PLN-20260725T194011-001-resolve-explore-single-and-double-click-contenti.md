@@ -5,8 +5,8 @@ type: plan
 title: Resolve Explore single and double click contention
 status: approved
 created_at: 2026-07-25T19:40:11+09:00
-updated_at: 2026-07-25T20:27:15+09:00
-revision: 5
+updated_at: 2026-07-25T20:41:16+09:00
+revision: 7
 tags: []
 links:
 - relation: references
@@ -78,12 +78,12 @@ metadata: {}
 
 | ID | Goal Criteria | Outcome / Task | State | Verification |
 | --- | --- | --- | --- | --- |
-| T-001 | SC-001, SC-002 | Explore nodeのsingle/double clickを排他的に調停し、保留timerとstale callbackを安全にcleanupする | not-started | `src/browse.js`のfocused reviewとinteraction test結果 |
-| T-002 | SC-001, SC-002 | 実nodeへの反復double clickが詳細へ移動して展開せず、single clickが一度だけ展開するPlaywright回帰testを追加する | not-started | 新規Playwright testを単独・suite内で実行しpassをEvidence化 |
-| T-003 | SC-003 | Accessible Goal listとkeyboard/canvas-independent導線が変更されず利用可能であることを確認する | not-started | 既存accessibility導線のPlaywright assertionと変更差分review |
-| T-004 | SC-004 | fmt、clippy、全target test、Playwright E2E、rebuild、doctorを実行する | not-started | 各commandのpassing outputをGoalに紐づくEvidenceとして記録 |
-| T-005 | SC-001, SC-002, SC-003, SC-004 | fresh contextで実装diff、Goal、Plan、Evidenceを照合し、findingを解消または明示する | not-started | Review entryをWorkに`reviews`でlinkし、全SC coverageを確認 |
-| T-006 | SC-001, SC-002, SC-003, SC-004 | 人間が修正後の操作結果を受入れ、Goal達成可否を判断する | not-started | human-acceptance Evidence |
+| T-001 | SC-001, SC-002 | Explore nodeのsingle/double clickを排他的に調停し、保留timerとstale callbackを安全にcleanupする | implemented | `src/browse.js`のfocused reviewとinteraction test結果 |
+| T-002 | SC-001, SC-002 | 実nodeへの反復double clickが詳細へ移動して展開せず、single clickが一度だけ展開するPlaywright回帰testを追加する | implemented | 新規Playwright testを単独・suite内で実行しpassをEvidence化 |
+| T-003 | SC-003 | Accessible Goal listとkeyboard/canvas-independent導線が変更されず利用可能であることを確認する | implemented | 既存accessibility導線のPlaywright assertionと変更差分review |
+| T-004 | SC-004 | fmt、clippy、全target test、Playwright E2E、rebuild、doctorを実行する | blocked | 各commandのpassing outputをGoalに紐づくEvidenceとして記録 |
+| T-005 | SC-001, SC-002, SC-003, SC-004 | fresh contextで実装diff、Goal、Plan、Evidenceを照合し、findingを解消または明示する | verified | Review entryをWorkに`reviews`でlinkし、全SC coverageを確認 |
+| T-006 | SC-001, SC-002, SC-003, SC-004 | 人間が修正後の操作結果を受入れ、Goal達成可否を判断する | blocked | human-acceptance Evidence |
 
 ## Acceptance and Evidence
 
