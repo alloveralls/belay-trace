@@ -66,7 +66,13 @@ pub struct GoalLintFinding {
 pub fn template() -> String {
     REQUIRED_SECTIONS
         .iter()
-        .map(|section| format!("## {section}\n\n- TODO\n"))
+        .map(|section| {
+            if *section == "Success Criteria" {
+                format!("## {section}\n\n- [SC-001] TODO\n")
+            } else {
+                format!("## {section}\n\n- TODO\n")
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n")
         .trim_end()
@@ -197,6 +203,18 @@ pub fn lint_entry(
             Some(_) => {}
         }
     }
+
+    total += 1;
+    findings.extend(
+        crate::trace_ids::goal_id_findings(&goal.body)
+            .into_iter()
+            .map(|finding| GoalLintFinding {
+                layer: "structure",
+                field: finding.field.to_owned(),
+                message: finding.message,
+                line: Some(finding.line),
+            }),
+    );
 
     let allowed = repository
         .config

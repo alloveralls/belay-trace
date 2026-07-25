@@ -5,8 +5,8 @@ type: goal
 title: Maintain intent-to-evidence alignment during agent delivery
 status: draft
 created_at: 2026-07-12T16:39:56+09:00
-updated_at: 2026-07-12T16:39:56+09:00
-revision: 1
+updated_at: 2026-07-24T21:44:40+09:00
+revision: 2
 tags: []
 links: []
 metadata: {}
@@ -18,11 +18,11 @@ metadata: {}
 
 ## Success Criteria
 
-- Tier 2 and Tier 3 work starts with an Intent Brief that exposes assumptions, unknowns, and human decisions.
-- Every Goal success criterion maps to observable delivery tasks and a verification method.
-- AI and humans can distinguish not started, in progress, blocked, implemented, verified, and dropped work.
-- Reconciliation exposes scope changes, unimplemented criteria, and unverified work before completion.
-- Completion requires relevant Evidence and human acceptance rather than implementation alone.
+- [SC-001] Tier 2 and Tier 3 work starts with an Intent Brief that exposes assumptions, unknowns, and human decisions.
+- [SC-002] Every Goal success criterion maps to observable delivery tasks and a verification method.
+- [SC-003] AI and humans can distinguish not started, in progress, blocked, implemented, verified, and dropped work.
+- [SC-004] Reconciliation exposes scope changes, unimplemented criteria, and unverified work before completion.
+- [SC-005] Completion requires relevant Evidence and human acceptance rather than implementation alone.
 
 ## Constraints
 

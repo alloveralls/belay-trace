@@ -16,5 +16,6 @@ pub mod reconcile;
 pub mod repository;
 pub mod search;
 pub mod store;
+pub mod trace_ids;
 
 pub use error::BelayError;

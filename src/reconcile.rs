@@ -401,6 +401,7 @@ fn restore_links_to_targets(
             }
             let target_id =
                 store::resolve_internal_id(&transaction, &database_path, &target.display_id)?;
+            store::validate_reference_fragment(&transaction, &database_path, &target)?;
             let metadata =
                 serde_json::to_string(&link.metadata).map_err(|source| BelayError::Validation {
                     message: format!("could not serialize link metadata: {source}"),
@@ -970,6 +971,29 @@ pub fn doctor(repository: &Repository) -> DoctorReport {
                     });
                 }
             }
+            match invalid_fragment_details(&connection, &database_path) {
+                Ok(details) if details.is_empty() => checks.push(DoctorCheck {
+                    name: "SC/Task references".to_owned(),
+                    status: "ok",
+                    detail: "all structured fragments resolve uniquely".to_owned(),
+                }),
+                Ok(details) => {
+                    has_drift = true;
+                    checks.push(DoctorCheck {
+                        name: "SC/Task references".to_owned(),
+                        status: "drift",
+                        detail: details.join("; "),
+                    });
+                }
+                Err(error) => {
+                    has_invalid = true;
+                    checks.push(DoctorCheck {
+                        name: "SC/Task references".to_owned(),
+                        status: "invalid",
+                        detail: error.to_string(),
+                    });
+                }
+            }
             match crate::evidence::stale_doctor_details(repository, &connection, &database_path) {
                 Ok(details) if details.is_empty() => checks.push(DoctorCheck {
                     name: "Evidence freshness".to_owned(),
@@ -1014,6 +1038,44 @@ pub fn doctor(repository: &Repository) -> DoctorReport {
                         name: "Goal sections".to_owned(),
                         status: "drift",
                         detail: missing_sections.join("; "),
+                    });
+                }
+                let local_id_issues = inventory
+                    .entries
+                    .values()
+                    .flat_map(|mirror| {
+                        let findings = match mirror.entry.entry_type {
+                            crate::entry::EntryType::Goal => {
+                                crate::trace_ids::goal_id_findings(&mirror.entry.body)
+                            }
+                            crate::entry::EntryType::Plan => {
+                                crate::trace_ids::plan_id_findings(&mirror.entry.body)
+                            }
+                            _ => Vec::new(),
+                        };
+                        findings
+                            .into_iter()
+                            .map(|finding| {
+                                format!(
+                                    "{} line {}: {}",
+                                    mirror.entry.display_id, finding.line, finding.message
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>();
+                if local_id_issues.is_empty() {
+                    checks.push(DoctorCheck {
+                        name: "SC/Task ID format".to_owned(),
+                        status: "ok",
+                        detail: "all defined IDs are canonical and unique".to_owned(),
+                    });
+                } else {
+                    has_drift = true;
+                    checks.push(DoctorCheck {
+                        name: "SC/Task ID format".to_owned(),
+                        status: "drift",
+                        detail: local_id_issues.join("; "),
                     });
                 }
                 match inspect_drift(&connection, &database_path, inventory) {
@@ -1087,6 +1149,46 @@ pub fn doctor(repository: &Repository) -> DoctorReport {
         has_drift,
         has_invalid,
     }
+}
+
+fn invalid_fragment_details(
+    connection: &Connection,
+    database_path: &Path,
+) -> Result<Vec<String>, BelayError> {
+    let mut references = Vec::new();
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT target.display_id, links.to_fragment
+            FROM entry_links links
+            JOIN entries target ON target.id = links.to_entry_id
+            WHERE links.to_fragment != ''
+            UNION
+            SELECT substr(target, 1, instr(target, '#') - 1),
+                   substr(target, instr(target, '#') + 1)
+            FROM evidence_links
+            WHERE instr(target, '#') > 0
+            ORDER BY 1, 2
+            ",
+        )
+        .map_err(|source| BelayError::sqlite(database_path, source))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|source| BelayError::sqlite(database_path, source))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|source| BelayError::sqlite(database_path, source))?;
+    for (display_id, fragment) in rows {
+        let value = format!("{display_id}#{fragment}");
+        let reference = parse_entry_reference_id(&value)?;
+        if let Err(error) =
+            store::validate_reference_fragment(connection, database_path, &reference)
+        {
+            references.push(format!("{value}: {error}"));
+        }
+    }
+    Ok(references)
 }
 
 fn inspect_drift(

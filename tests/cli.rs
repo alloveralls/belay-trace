@@ -1110,6 +1110,212 @@ fn show_link_and_status_use_display_ids_and_keep_mirror_in_sync() {
 }
 
 #[test]
+fn links_and_evidence_require_defined_goal_and_plan_fragments() {
+    let temporary = initialize_repository();
+    let goal = created_id(
+        &belay()
+            .args(["add", "goal", "--title", "Stable local IDs"])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add goal"),
+    );
+    let plan_body = "## Delivery Map\n\n| ID | Goal item | Outcome / Task | Actor | State | Verification / Evidence |\n| --- | --- | --- | --- | --- | --- |\n| T-001 | SC-001 | Preserve IDs | AI | implemented | pending |\n";
+    let plan = created_id(
+        &belay()
+            .args([
+                "add",
+                "plan",
+                "--title",
+                "Deliver stable local IDs",
+                "--body",
+                plan_body,
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add plan"),
+    );
+    let work = created_id(
+        &belay()
+            .args([
+                "add",
+                "work",
+                "--title",
+                "Implement stable local IDs",
+                "--body",
+                "Implementation",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add work"),
+    );
+
+    let criterion = format!("{goal}#SC-001");
+    let task = format!("{plan}#t-001");
+    for (target, relation) in [(&criterion, "fulfills"), (&task, "implements")] {
+        let linked = belay()
+            .args(["link", &work, target, "--relation", relation])
+            .current_dir(temporary.path())
+            .output()
+            .expect("link fragment");
+        assert!(linked.status.success(), "{linked:?}");
+    }
+
+    let work_mirror = temporary
+        .path()
+        .join(".belay/entries/work")
+        .join(format!("{work}.md"));
+    let mirror = fs::read_to_string(&work_mirror).expect("read work mirror");
+    assert!(mirror.contains(&format!("id: {goal}#sc-001")));
+    assert!(!mirror.contains(&format!("id: {goal}#SC-001")));
+
+    for legacy in [format!("{goal}#sc-1"), format!("{plan}#task-t-1")] {
+        let rejected = belay()
+            .args(["link", &work, &legacy, "--relation", "references"])
+            .current_dir(temporary.path())
+            .output()
+            .expect("reject legacy fragment");
+        assert_eq!(rejected.status.code(), Some(4));
+        assert!(
+            String::from_utf8(rejected.stderr)
+                .expect("legacy rejection is UTF-8")
+                .contains("is not canonical")
+        );
+    }
+
+    let rejected_evidence = belay()
+        .args([
+            "verify",
+            "record",
+            "--kind",
+            "test",
+            "--verdict",
+            "pass",
+            "--source",
+            "cargo test",
+            "--summary",
+            "reject legacy fragment",
+            "--verifies",
+            &format!("{goal}#sc-1"),
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("reject evidence with legacy fragment");
+    assert_eq!(rejected_evidence.status.code(), Some(4));
+    assert!(
+        String::from_utf8(rejected_evidence.stderr)
+            .expect("legacy Evidence rejection is UTF-8")
+            .contains("is not canonical")
+    );
+
+    let duplicate = belay()
+        .args([
+            "link",
+            &work,
+            &format!("{goal}#sc-001"),
+            "--relation",
+            "fulfills",
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("link canonical duplicate fragment");
+    assert!(duplicate.status.success(), "{duplicate:?}");
+    let connection = Connection::open(temporary.path().join(".belay/state/belay.sqlite"))
+        .expect("open database");
+    let link_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM entry_links WHERE to_fragment = 'sc-001'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count canonical fragment links");
+    assert_eq!(link_count, 1);
+
+    let recorded = belay()
+        .args([
+            "verify",
+            "record",
+            "--kind",
+            "test",
+            "--verdict",
+            "pass",
+            "--source",
+            "cargo test",
+            "--summary",
+            "canonical fragment",
+            "--verifies",
+            &criterion,
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("record evidence for uppercase fragment");
+    assert!(recorded.status.success(), "{recorded:?}");
+    let evidence_target: String = connection
+        .query_row("SELECT target FROM evidence_links", [], |row| row.get(0))
+        .expect("read evidence target");
+    assert_eq!(evidence_target, format!("{goal}#sc-001"));
+    let evidence_mirror = fs::read_dir(temporary.path().join(".belay/evidence"))
+        .expect("read evidence directory")
+        .next()
+        .expect("evidence mirror")
+        .expect("read evidence mirror entry")
+        .path();
+    let evidence_json = fs::read_to_string(evidence_mirror).expect("read evidence mirror");
+    assert!(evidence_json.contains(&format!("\"target\":\"{goal}#sc-001\"")));
+    let evidence_status = belay()
+        .args(["verify", "status", &criterion])
+        .current_dir(temporary.path())
+        .output()
+        .expect("show evidence for uppercase fragment");
+    assert!(evidence_status.status.success(), "{evidence_status:?}");
+    let evidence_status =
+        String::from_utf8(evidence_status.stdout).expect("evidence status is UTF-8");
+    assert!(evidence_status.starts_with(&format!("{goal}#sc-001\n")));
+    assert!(evidence_status.contains("canonical fragment"));
+
+    let missing = format!("{goal}#sc-999");
+    let rejected_link = belay()
+        .args(["link", &work, &missing, "--relation", "fulfills"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("reject missing link fragment");
+    assert_eq!(rejected_link.status.code(), Some(4));
+    assert!(
+        String::from_utf8(rejected_link.stderr)
+            .expect("link stderr")
+            .contains("fragment #sc-999 was not found")
+    );
+
+    let evidence_files_before_rejection = fs::read_dir(temporary.path().join(".belay/evidence"))
+        .expect("read evidence directory")
+        .count();
+    let rejected_evidence = belay()
+        .args([
+            "verify",
+            "record",
+            "--kind",
+            "test",
+            "--verdict",
+            "pass",
+            "--source",
+            "cargo test",
+            "--summary",
+            "fragment validation",
+            "--verifies",
+            &missing,
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("reject missing evidence fragment");
+    assert_eq!(rejected_evidence.status.code(), Some(4));
+    assert_eq!(
+        fs::read_dir(temporary.path().join(".belay/evidence"))
+            .expect("read evidence directory")
+            .count(),
+        evidence_files_before_rejection
+    );
+}
+
+#[test]
 fn link_and_status_validation_do_not_mutate_entries() {
     let temporary = initialize_repository();
     let decision = created_id(

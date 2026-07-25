@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use ammonia::Builder;
 use chrono::{DateTime, Local, SecondsFormat, Utc};
-use pulldown_cmark::{Event, Options, Parser, html};
+use pulldown_cmark::{CowStr, Event, LinkType, Options, Parser, Tag, TagEnd, html};
 use rusqlite::backup::Backup;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
@@ -316,7 +316,7 @@ impl BrowseState {
                     (entry, Some(fragment))
                 });
             let fragment = fragment
-                .map(|value| format!("#{}", encode_segment(value)))
+                .map(|value| format!("#{}", encode_segment(&value.to_ascii_lowercase())))
                 .unwrap_or_default();
             body.push_str(&format!("<li><span class=\"badge relation-{}\">{}</span> <a href=\"/entries/{}{}\">{}</a></li>", escape(&target.relation), escape(&target.relation), encode_segment(entry_id), fragment, escape(&target.target)));
         }
@@ -878,11 +878,33 @@ fn recent_entries(connection: &Connection) -> Result<Vec<search::SearchResult>, 
 
 fn render_markdown(markdown: &str, goal: bool, plan: bool, delivery_goal: Option<&str>) -> String {
     let mut rendered = String::new();
-    html::push_html(
-        &mut rendered,
-        Parser::new_ext(markdown, Options::all())
-            .filter(|event| !matches!(event, Event::Html(_) | Event::InlineHtml(_))),
-    );
+    let mut events = Vec::new();
+    let mut suppress_links = 0_u32;
+    for event in Parser::new_ext(markdown, Options::all()) {
+        match event {
+            Event::Html(_) | Event::InlineHtml(_) => {}
+            Event::Start(tag) => {
+                if matches!(
+                    tag,
+                    Tag::Link { .. } | Tag::Image { .. } | Tag::CodeBlock(_)
+                ) {
+                    suppress_links += 1;
+                }
+                events.push(Event::Start(tag.into_static()));
+            }
+            Event::End(end) => {
+                events.push(Event::End(end));
+                if matches!(end, TagEnd::Link | TagEnd::Image | TagEnd::CodeBlock) {
+                    suppress_links = suppress_links.saturating_sub(1);
+                }
+            }
+            Event::Text(text) if suppress_links == 0 => {
+                events.extend(link_reference_text(text.as_ref()));
+            }
+            event => events.push(event.into_static()),
+        }
+    }
+    html::push_html(&mut rendered, events.into_iter());
     let mut builder = Builder::default();
     builder.rm_tags(HashSet::from(["img"]));
     builder.url_schemes(HashSet::from(["http", "https", "mailto"]));
@@ -897,9 +919,57 @@ fn render_markdown(markdown: &str, goal: bool, plan: bool, delivery_goal: Option
     format!("<div class=\"markdown-body\">{clean}</div>")
 }
 
+fn link_reference_text(text: &str) -> Vec<Event<'static>> {
+    let spans = crate::trace_ids::reference_spans(text);
+    if spans.is_empty() {
+        return vec![Event::Text(CowStr::from(text.to_owned()))];
+    }
+    let mut events = Vec::new();
+    let mut cursor = 0;
+    for span in spans {
+        if span.start > cursor {
+            events.push(Event::Text(CowStr::from(
+                text[cursor..span.start].to_owned(),
+            )));
+        }
+        let destination = if span.evidence {
+            format!("/evidence/{}", encode_segment(&span.value))
+        } else {
+            let (entry, fragment) = span
+                .value
+                .split_once('#')
+                .map_or((span.value.as_str(), None), |(entry, fragment)| {
+                    (entry, Some(fragment))
+                });
+            fragment.map_or_else(
+                || format!("/entries/{}", encode_segment(entry)),
+                |fragment| {
+                    format!(
+                        "/entries/{}#{}",
+                        encode_segment(entry),
+                        encode_segment(&fragment.to_ascii_lowercase())
+                    )
+                },
+            )
+        };
+        events.push(Event::Start(Tag::Link {
+            link_type: LinkType::Inline,
+            dest_url: CowStr::from(destination),
+            title: CowStr::from(String::new()),
+            id: CowStr::from(String::new()),
+        }));
+        events.push(Event::Text(CowStr::from(span.value)));
+        events.push(Event::End(TagEnd::Link));
+        cursor = span.end;
+    }
+    if cursor < text.len() {
+        events.push(Event::Text(CowStr::from(text[cursor..].to_owned())));
+    }
+    events
+}
+
 fn add_success_criteria_anchors(markdown: &str, html: &mut String) {
     let mut in_section = false;
-    let mut criterion = 0;
     let mut html_cursor = html
         .find(">Success Criteria</h2>")
         .map_or(0, |position| position + ">Success Criteria</h2>".len());
@@ -914,25 +984,24 @@ fn add_success_criteria_anchors(markdown: &str, html: &mut String) {
         if line.starts_with("## ") {
             break;
         }
-        let trimmed = line.trim();
-        let Some(item) = trimmed
+        let Some(item) = line
             .strip_prefix("- ")
-            .or_else(|| trimmed.strip_prefix("* "))
-            .or_else(|| trimmed.strip_prefix("+ "))
+            .or_else(|| line.strip_prefix("* "))
+            .or_else(|| line.strip_prefix("+ "))
         else {
             continue;
         };
-        criterion += 1;
-        let normalized = item.split_whitespace().collect::<Vec<_>>().join(" ");
-        let id = format!("sc-{:x}", Sha256::digest(normalized.as_bytes()))[..11].to_owned();
-        if let Some(relative) = html[html_cursor..].find("<li>") {
-            let position = html_cursor + relative;
-            let replacement = format!(
-                "<li id=\"{id}\"><span id=\"sc-{criterion}\" class=\"criterion-anchor\" aria-hidden=\"true\"></span>"
-            );
-            html.replace_range(position..position + 4, &replacement);
-            html_cursor = position + replacement.len();
-        }
+        let Some(relative) = html[html_cursor..].find("<li>") else {
+            continue;
+        };
+        let position = html_cursor + relative;
+        html_cursor = position + 4;
+        let Some(id) = crate::trace_ids::explicit_goal_id(item).map(str::to_ascii_lowercase) else {
+            continue;
+        };
+        let replacement = format!("<li id=\"{id}\">");
+        html.replace_range(position..position + 4, &replacement);
+        html_cursor = position + replacement.len();
     }
 }
 
@@ -984,19 +1053,13 @@ fn decorate_delivery_map(markdown: &str, html: &mut String, goal_id: Option<&str
         if !task_id.starts_with("T-") {
             continue;
         }
+        let task_fragment = task_id.to_ascii_lowercase();
         cursor = decorate_table_cell(
             html,
             cursor,
             task_id,
-            &format!(
-                "class=\"delivery-id\" id=\"task-{}\"",
-                task_id.to_ascii_lowercase()
-            ),
-            &format!(
-                "<a href=\"#task-{}\">{}</a>",
-                task_id.to_ascii_lowercase(),
-                escape(task_id)
-            ),
+            &format!("class=\"delivery-id\" id=\"{}\"", task_fragment),
+            &format!("<a href=\"#{}\">{}</a>", task_fragment, escape(task_id)),
         );
         if let Some(index) = goal_index {
             let goal_item = cells[index].trim();
@@ -1182,7 +1245,7 @@ fn link_html(link: &LinkView) -> String {
     let suffix = if link.fragment.is_empty() {
         String::new()
     } else {
-        format!("#{}", encode_segment(&link.fragment))
+        format!("#{}", encode_segment(&link.fragment.to_ascii_lowercase()))
     };
     format!(
         "<li><span class=\"badge relation-{}\">{}</span> <span class=\"badge type-{}\">{}</span> <a href=\"/entries/{}{}\">{} · {}</a></li>",
@@ -1590,31 +1653,59 @@ mod tests {
     }
 
     #[test]
-    fn goal_success_criteria_receive_coverage_compatible_anchors() {
+    fn goal_success_criteria_receive_canonical_anchors() {
         let rendered = render_markdown(
-            "## Success Criteria\n\n- Stable result\n",
+            "## Success Criteria\n\n- [SC-001] Stable result\n",
             true,
             false,
             None,
         );
-        let expected = format!("sc-{:x}", Sha256::digest(b"Stable result"))[..11].to_owned();
-        assert!(rendered.contains(&format!("id=\"{expected}\"")));
-        assert!(rendered.contains("id=\"sc-1\""));
+        assert!(rendered.contains("id=\"sc-001\""));
+        assert!(!rendered.contains("id=\"sc-1\""));
     }
 
     #[test]
     fn delivery_map_task_and_goal_items_are_links_and_state_is_a_badge() {
         let rendered = render_markdown(
-            "## Delivery Map\n\n| ID | Goal item | State |\n| --- | --- | --- |\n| T-1 | SC-1..SC-3 | in-progress |\n",
+            "## Delivery Map\n\n| ID | Goal item | State |\n| --- | --- | --- |\n| T-001 | SC-001..SC-003 | in-progress |\n",
             false,
             true,
             Some("GOAL-20260712T000000-001-example"),
         );
-        assert!(rendered.contains("id=\"task-t-1\""));
-        assert!(rendered.contains("href=\"#task-t-1\""));
-        assert!(rendered.contains("href=\"/entries/GOAL-20260712T000000-001-example#sc-1\""));
-        assert!(rendered.contains("href=\"/entries/GOAL-20260712T000000-001-example#sc-3\""));
+        assert!(rendered.contains("id=\"t-001\""));
+        assert!(!rendered.contains("id=\"task-t-001\""));
+        assert!(rendered.contains("href=\"#t-001\""));
+        assert!(rendered.contains("href=\"/entries/GOAL-20260712T000000-001-example#sc-001\""));
+        assert!(rendered.contains("href=\"/entries/GOAL-20260712T000000-001-example#sc-003\""));
         assert!(rendered.contains("class=\"badge status-in-progress\""));
+    }
+
+    #[test]
+    fn explicit_goal_ids_do_not_emit_legacy_aliases() {
+        let rendered = render_markdown(
+            "## Success Criteria\n\n- [SC-001] Stable result\n",
+            true,
+            false,
+            None,
+        );
+        assert!(rendered.contains("id=\"sc-001\""));
+        assert!(!rendered.contains("id=\"sc-1\""));
+    }
+
+    #[test]
+    fn fully_qualified_references_are_linked_but_code_is_not() {
+        let rendered = render_markdown(
+            "See GOAL-20260723T120000-001-safe-sync#SC-001 and \
+             EVD-20260723T120500-001.\n\n\
+             `GOAL-20260723T120000-001-safe-sync#sc-001`",
+            false,
+            false,
+            None,
+        );
+        assert!(rendered.contains("href=\"/entries/GOAL-20260723T120000-001-safe-sync#sc-001\""));
+        assert!(rendered.contains(">GOAL-20260723T120000-001-safe-sync#SC-001</a>"));
+        assert!(rendered.contains("href=\"/evidence/EVD-20260723T120500-001\""));
+        assert_eq!(rendered.matches("href=\"/entries/").count(), 1);
     }
 
     #[test]

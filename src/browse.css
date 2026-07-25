@@ -75,7 +75,6 @@ td:first-child, .delivery-id, .goal-item, .delivery-actor, .delivery-status { wh
 .markdown-body tbody tr:hover { background: rgba(139, 199, 255, .045); }
 .markdown-body code { color: #f2c98c; background: #101722; border-radius: .25rem; padding: .08rem .3rem; }
 .markdown-body pre code { color: inherit; background: transparent; padding: 0; }
-.criterion-anchor { display: block; position: relative; top: -5rem; visibility: hidden; }
 .graph-legend { margin: .6rem 0 1rem; }
 #graph { height: 600px; border: 1px solid #536078; background: #f8fafc; border-radius: .55rem; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }

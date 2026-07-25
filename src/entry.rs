@@ -296,6 +296,9 @@ impl Entry {
             .trim_end_matches('\n')
             .to_owned();
         self.tags.sort();
+        for link in &mut self.links {
+            link.id = parse_entry_reference_id(&link.id)?.canonical_id();
+        }
         self.links.sort_by(|left, right| {
             (left.relation, left.id.as_str()).cmp(&(right.relation, right.id.as_str()))
         });
@@ -375,6 +378,15 @@ pub struct DisplayIdParts {
 pub struct EntryReferenceParts {
     pub display_id: String,
     pub fragment: Option<String>,
+}
+
+impl EntryReferenceParts {
+    pub fn canonical_id(&self) -> String {
+        self.fragment.as_ref().map_or_else(
+            || self.display_id.clone(),
+            |fragment| format!("{}#{fragment}", self.display_id),
+        )
+    }
 }
 
 pub struct ImmediateTransaction<'connection> {
@@ -460,7 +472,7 @@ pub fn parse_entry_reference_id(value: &str) -> Result<EntryReferenceParts, Bela
                     ),
                 });
             }
-            (display_id, Some(fragment.to_owned()))
+            (display_id, Some(fragment.to_ascii_lowercase()))
         }
         None => (value, None),
     };
@@ -676,6 +688,18 @@ mod tests {
         ] {
             assert!(parse_display_id(invalid).is_err(), "{invalid} must fail");
         }
+    }
+
+    #[test]
+    fn entry_reference_parser_canonicalizes_fragment_case() {
+        let reference = parse_entry_reference_id("GOAL-20260606T120000-001-example#SC-001")
+            .expect("parse entry reference");
+
+        assert_eq!(reference.fragment.as_deref(), Some("sc-001"));
+        assert_eq!(
+            reference.canonical_id(),
+            "GOAL-20260606T120000-001-example#sc-001"
+        );
     }
 
     #[test]

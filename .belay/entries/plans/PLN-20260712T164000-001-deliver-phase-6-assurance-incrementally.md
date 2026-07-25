@@ -5,8 +5,8 @@ type: plan
 title: Deliver Phase 6 assurance incrementally
 status: draft
 created_at: 2026-07-12T16:40:00+09:00
-updated_at: 2026-07-12T17:30:24+09:00
-revision: 5
+updated_at: 2026-07-24T21:44:40+09:00
+revision: 6
 tags: []
 links:
 - relation: fulfills
@@ -54,12 +54,12 @@ metadata: {}
 
 | ID | Goal item | Outcome / Task | Actor | State | Verification / Evidence |
 | --- | --- | --- | --- | --- | --- |
-| T-1 | SC-1 | Specify Intent Brief and Delivery Map conventions | AI + Human | implemented | human review pending; `docs/design/phase6.md` |
-| T-2 | SC-1..SC-4 | Build Agent-first MVP integration | AI | implemented | `cargo test`: 90 passed on working copy; fresh commit Evidence and fresh-context review pending; WRK-20260712T165103-001-implement-phase-6-1-agent-first-delivery-assuran; WRK-20260712T172930-001-add-updater-for-existing-belay-projects |
-| T-3 | SC-1..SC-4 | Dogfood five Tier 2 or Tier 3 tasks | AI + Human | not-started | recorded findings |
-| T-4 | SC-2..SC-4 | Add deterministic Plan lint if justified | AI | not-started | unit and CLI tests |
-| T-5 | SC-3..SC-4 | Add reconciliation report if justified | AI | not-started | fresh-session handoff test |
-| T-6 | SC-5 | Add opt-in completion gate if justified | AI + Human | not-started | prevented premature completion |
+| T-001 | SC-001 | Specify Intent Brief and Delivery Map conventions | AI + Human | implemented | human review pending; `docs/design/phase6.md` |
+| T-002 | SC-001..SC-004 | Build Agent-first MVP integration | AI | implemented | `cargo test`: 90 passed on working copy; fresh commit Evidence and fresh-context review pending; WRK-20260712T165103-001-implement-phase-6-1-agent-first-delivery-assuran; WRK-20260712T172930-001-add-updater-for-existing-belay-projects |
+| T-003 | SC-001..SC-004 | Dogfood five Tier 2 or Tier 3 tasks | AI + Human | not-started | recorded findings |
+| T-004 | SC-002..SC-004 | Add deterministic Plan lint if justified | AI | not-started | unit and CLI tests |
+| T-005 | SC-003..SC-004 | Add reconciliation report if justified | AI | not-started | fresh-session handoff test |
+| T-006 | SC-005 | Add opt-in completion gate if justified | AI + Human | not-started | prevented premature completion |
 
 ## Roadmap
 

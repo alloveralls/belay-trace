@@ -23,10 +23,10 @@ description: Use for Tier 2 or Tier 3 coding work, or whenever a task needs proj
 
 ## Map
 
-1. Give each Goal Success Criterion a stable ID.
+1. Give each Goal Success Criterion a stable, document-local ID using `SC-NNN`, starting at `SC-001`. Never renumber or reuse an ID.
 2. Add a Delivery Map to the Plan with columns: ID, Goal item, Outcome / Task, Actor, State, and Verification / Evidence.
 3. Map every Success Criterion to an observable outcome task and a verification task. Explain any task that has no Goal item.
-4. Keep Task IDs stable. Use only `not-started`, `in-progress`, `blocked`, `implemented`, `verified`, and `dropped`.
+4. Give tasks stable, document-local IDs using `T-NNN`, starting at `T-001`. Never renumber or reuse an ID. Outside the defining document, use fully qualified references such as `GOAL-...#sc-001` and `PLN-...#t-001`.
 5. `implemented` means the change exists; `verified` requires fresh passing Evidence that actually checks the mapped outcome. A test definition is not passing Evidence.
 6. Keep dropped tasks visible and record the reason and approval source.
 
