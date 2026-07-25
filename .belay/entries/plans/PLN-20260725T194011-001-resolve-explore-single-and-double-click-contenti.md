@@ -5,8 +5,8 @@ type: plan
 title: Resolve Explore single and double click contention
 status: approved
 created_at: 2026-07-25T19:40:11+09:00
-updated_at: 2026-07-25T20:41:16+09:00
-revision: 7
+updated_at: 2026-07-25T22:18:31+09:00
+revision: 8
 tags: []
 links:
 - relation: references
@@ -93,6 +93,6 @@ metadata: {}
 
 ## References
 
-- GitHub Issue #15: https://github.com/alloveralls/belay-trace/issues/15
+- [GitHub Issue #15](https://github.com/alloveralls/belay-trace/issues/15)
 - Existing Browse Plan: PLN-20260722T225244-001-add-a-local-trace-provenance-browser
 - Existing Browse Work: WRK-20260723T192431-001-refine-browse-readability-and-trace-navigation

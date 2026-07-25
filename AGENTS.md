@@ -329,6 +329,7 @@ Record the validation outcome in the work and review entries.
 
 - Frame intent in the Plan before implementation with these non-empty Intent Brief sections: Problem, Desired Outcome, Success Signals, Constraints, Non-goals, Assumptions, and Unknowns / Decisions Needed. Write `None identified` when a section has no items.
 - Label uncertain statements as assumptions or unknowns. Ask about decisions that materially change the outcome, security, data loss, external commitments, or irreversible work; proceed with explicitly recorded, small, reversible assumptions.
+- Give Goal criteria document-local IDs (`SC-001`, `SC-002`, ...) and Delivery Map tasks document-local IDs (`T-001`, `T-002`, ...). Never renumber or reuse an ID. Use a fully qualified reference (`GOAL-...#sc-001` or `PLN-...#t-001`) outside the defining document.
 - Map every Goal Success Criterion to observable outcome and verification tasks in a Delivery Map. Keep Task IDs stable and use only `not-started`, `in-progress`, `blocked`, `implemented`, `verified`, or `dropped`.
 - Treat `implemented` and `verified` as different states. Passing Evidence is required for `verified`; a code change or test definition alone is not verification. Preserve the reason and approval source for every `dropped` task.
 - Reconcile the Intent Brief, Goal, Delivery Map, actual diff, and Evidence after a meaningful task, a discovered requirement or risk, a scope or design change, before interruption or handoff, when asked for status, and before declaring completion.

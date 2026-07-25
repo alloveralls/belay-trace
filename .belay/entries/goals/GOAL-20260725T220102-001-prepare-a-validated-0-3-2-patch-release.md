@@ -5,8 +5,8 @@ type: goal
 title: Prepare a validated 0.3.2 patch release
 status: active
 created_at: 2026-07-25T22:01:02+09:00
-updated_at: 2026-07-25T22:04:41+09:00
-revision: 2
+updated_at: 2026-07-25T22:40:29+09:00
+revision: 4
 tags: []
 links: []
 metadata: {}
@@ -26,7 +26,7 @@ Prepare version 0.3.2 for the backward-compatible Browse activation and readabil
 ## Constraints
 
 - Preserve existing CLI, storage schema, managed Markdown, Explore API, and read-only Browse contracts.
-- Do not create a tag, GitHub Release, PR, publish artifact, or merge during version-bump implementation.
+- Draft PR creation and squash merge of PR #16 are approved after review; do not create a tag, GitHub Release, or publish artifact.
 - Do not claim release readiness while Playwright interaction tests are unverified.
 
 ## Non-goals
