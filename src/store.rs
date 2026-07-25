@@ -771,6 +771,12 @@ pub(crate) fn validate_reference_fragment(
         )
         .map_err(|source| BelayError::sqlite(database_path, source))?;
     let entry_type = entry_type.parse()?;
+    if !crate::trace_ids::valid_reference_fragment(entry_type, fragment) {
+        return validation(format!(
+            "fragment #{fragment} is not canonical for {}; expected #sc-NNN for a Goal or #t-NNN for a Plan",
+            reference.display_id
+        ));
+    }
     match crate::trace_ids::fragment_match_count(entry_type, &body, fragment) {
         1 => Ok(()),
         0 => validation(format!(

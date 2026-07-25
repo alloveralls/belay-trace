@@ -1,7 +1,5 @@
 use std::collections::BTreeSet;
 
-use sha2::{Digest, Sha256};
-
 use crate::entry::EntryType;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,23 +33,24 @@ pub fn fragment_match_count(entry_type: EntryType, body: &str, fragment: &str) -
     match entry_type {
         EntryType::Goal => goal_items(body)
             .into_iter()
-            .enumerate()
-            .filter(|(ordinal, (_, item))| {
-                format!("sc-{}", ordinal + 1).eq_ignore_ascii_case(fragment)
-                    || goal_item_fragments(item)
-                        .iter()
-                        .any(|candidate| candidate.eq_ignore_ascii_case(fragment))
+            .filter(|(_, item)| {
+                explicit_goal_id(item).is_some_and(|id| id.eq_ignore_ascii_case(fragment))
             })
             .count(),
         EntryType::Plan => delivery_map_ids(body)
             .into_iter()
-            .filter(|id| {
-                let normalized = id.to_ascii_lowercase();
-                normalized.eq_ignore_ascii_case(fragment)
-                    || format!("task-{normalized}").eq_ignore_ascii_case(fragment)
-            })
+            .filter(|id| id.eq_ignore_ascii_case(fragment))
             .count(),
         _ => 0,
+    }
+}
+
+pub fn valid_reference_fragment(entry_type: EntryType, fragment: &str) -> bool {
+    let upper = fragment.to_ascii_uppercase();
+    match entry_type {
+        EntryType::Goal => valid_goal_id(&upper),
+        EntryType::Plan => valid_task_id(&upper),
+        _ => false,
     }
 }
 
@@ -187,32 +186,17 @@ fn next_character(text: &str, offset: usize) -> usize {
 }
 
 fn goal_fragments(body: &str) -> BTreeSet<String> {
-    let mut fragments = BTreeSet::new();
-    for (ordinal, (_, item)) in goal_items(body).into_iter().enumerate() {
-        fragments.extend(goal_item_fragments(item));
-        fragments.insert(format!("sc-{}", ordinal + 1));
-    }
-    fragments
-}
-
-fn goal_item_fragments(item: &str) -> Vec<String> {
-    let normalized = criterion_text(item);
-    let legacy_hash = format!("sc-{:x}", Sha256::digest(normalized.as_bytes()))[..11].to_owned();
-    let mut fragments = vec![legacy_hash];
-    if let Some(id) = explicit_goal_id(item) {
-        fragments.push(id.to_ascii_lowercase());
-    }
-    fragments
+    goal_items(body)
+        .into_iter()
+        .filter_map(|(_, item)| explicit_goal_id(item).map(str::to_ascii_lowercase))
+        .collect()
 }
 
 fn plan_fragments(body: &str) -> BTreeSet<String> {
-    let mut fragments = BTreeSet::new();
-    for id in delivery_map_ids(body) {
-        let normalized = id.to_ascii_lowercase();
-        fragments.insert(normalized.clone());
-        fragments.insert(format!("task-{normalized}"));
-    }
-    fragments
+    delivery_map_ids(body)
+        .into_iter()
+        .map(|id| id.to_ascii_lowercase())
+        .collect()
 }
 
 fn goal_items(body: &str) -> Vec<(usize, &str)> {
@@ -243,18 +227,11 @@ pub fn explicit_goal_id(item: &str) -> Option<&str> {
     valid_goal_id(id).then_some(id)
 }
 
-pub fn criterion_text(item: &str) -> String {
-    let item = explicit_goal_id(item)
-        .and_then(|id| item.strip_prefix(&format!("[{id}]")))
-        .unwrap_or(item);
-    item.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 fn delivery_map_ids(body: &str) -> Vec<String> {
     delivery_map_id_rows(body)
         .into_iter()
         .map(|(_, id)| id)
-        .filter(|id| valid_task_id(id) || legacy_task_id(id))
+        .filter(|id| valid_task_id(id))
         .collect()
 }
 
@@ -294,13 +271,6 @@ fn delivery_map_id_rows(body: &str) -> Vec<(usize, String)> {
     ids
 }
 
-fn legacy_task_id(value: &str) -> bool {
-    let Some(number) = value.strip_prefix("T-") else {
-        return false;
-    };
-    !number.is_empty() && number.len() <= 3 && number.bytes().all(|byte| byte.is_ascii_digit())
-}
-
 fn table_cells(line: &str) -> Vec<String> {
     line.trim()
         .trim_matches('|')
@@ -314,12 +284,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn goal_fragments_include_canonical_and_legacy_anchors() {
+    fn goal_fragments_include_only_canonical_anchors() {
         let body = "## Success Criteria\n\n- [SC-001] Stable result\n";
         let fragments = local_fragments(EntryType::Goal, body);
-        assert!(fragments.contains("sc-001"));
-        assert!(fragments.contains("sc-1"));
-        assert!(fragments.iter().any(|fragment| fragment.starts_with("sc-")));
+        assert_eq!(fragments, BTreeSet::from(["sc-001".to_owned()]));
+        assert!(!fragment_exists(EntryType::Goal, body, "sc-1"));
     }
 
     #[test]
@@ -339,11 +308,21 @@ mod tests {
     }
 
     #[test]
-    fn plan_fragments_accept_canonical_and_legacy_task_anchors() {
+    fn plan_fragments_include_only_canonical_task_anchors() {
         let body = "## Delivery Map\n\n| ID | State |\n| --- | --- |\n| T-001 | verified |\n";
         let fragments = local_fragments(EntryType::Plan, body);
-        assert!(fragments.contains("t-001"));
-        assert!(fragments.contains("task-t-001"));
+        assert_eq!(fragments, BTreeSet::from(["t-001".to_owned()]));
+        assert!(!fragment_exists(EntryType::Plan, body, "task-t-001"));
+    }
+
+    #[test]
+    fn reference_fragments_require_fixed_width_canonical_ids() {
+        assert!(valid_reference_fragment(EntryType::Goal, "sc-001"));
+        assert!(valid_reference_fragment(EntryType::Goal, "SC-001"));
+        assert!(valid_reference_fragment(EntryType::Plan, "t-001"));
+        assert!(!valid_reference_fragment(EntryType::Goal, "sc-1"));
+        assert!(!valid_reference_fragment(EntryType::Plan, "task-t-1"));
+        assert!(!valid_reference_fragment(EntryType::Work, "sc-001"));
     }
 
     #[test]

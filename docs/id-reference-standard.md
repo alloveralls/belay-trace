@@ -105,9 +105,9 @@ Belay は新しい構造化リンクまたは Evidence target を保存すると
 重複定義されて一意に解決できない fragment も拒否する。定義後に直接 Markdown を
 編集して参照先を削除・重複させた場合は、`belay doctor` が drift として報告する。
 
-Goal lint は Success Criterion の ID 欠落と重複を報告する。既存データとの互換性の
-ため、旧来の Goal hash fragment、`#sc-1`、Plan の `#task-t-1` は読み取り可能な
-alias として残す。ただし新規作成・新規参照では canonical form だけを使う。
+Goal lint は Success Criterion の ID 欠落と重複を報告する。旧来の Goal hash
+fragment、`#sc-1`、Plan の `#task-t-1` は解決しない。既存文書にこれらの参照が
+残っている場合は、`#sc-NNN` / `#t-NNN` へ変換してから `belay rebuild` を実行する。
 
 ID は同一性を表し、内容の正しさや関係の意味を保証しない。たとえば Evidence が
 `SC-001` を target に持つだけでは、そのテストが criterion を十分に検証したことに

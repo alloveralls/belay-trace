@@ -1168,6 +1168,45 @@ fn links_and_evidence_require_defined_goal_and_plan_fragments() {
     assert!(mirror.contains(&format!("id: {goal}#sc-001")));
     assert!(!mirror.contains(&format!("id: {goal}#SC-001")));
 
+    for legacy in [format!("{goal}#sc-1"), format!("{plan}#task-t-1")] {
+        let rejected = belay()
+            .args(["link", &work, &legacy, "--relation", "references"])
+            .current_dir(temporary.path())
+            .output()
+            .expect("reject legacy fragment");
+        assert_eq!(rejected.status.code(), Some(4));
+        assert!(
+            String::from_utf8(rejected.stderr)
+                .expect("legacy rejection is UTF-8")
+                .contains("is not canonical")
+        );
+    }
+
+    let rejected_evidence = belay()
+        .args([
+            "verify",
+            "record",
+            "--kind",
+            "test",
+            "--verdict",
+            "pass",
+            "--source",
+            "cargo test",
+            "--summary",
+            "reject legacy fragment",
+            "--verifies",
+            &format!("{goal}#sc-1"),
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("reject evidence with legacy fragment");
+    assert_eq!(rejected_evidence.status.code(), Some(4));
+    assert!(
+        String::from_utf8(rejected_evidence.stderr)
+            .expect("legacy Evidence rejection is UTF-8")
+            .contains("is not canonical")
+    );
+
     let duplicate = belay()
         .args([
             "link",

@@ -970,7 +970,6 @@ fn link_reference_text(text: &str) -> Vec<Event<'static>> {
 
 fn add_success_criteria_anchors(markdown: &str, html: &mut String) {
     let mut in_section = false;
-    let mut criterion = 0;
     let mut html_cursor = html
         .find(">Success Criteria</h2>")
         .map_or(0, |position| position + ">Success Criteria</h2>".len());
@@ -992,28 +991,17 @@ fn add_success_criteria_anchors(markdown: &str, html: &mut String) {
         else {
             continue;
         };
-        criterion += 1;
-        let normalized = crate::trace_ids::criterion_text(item);
-        let legacy_hash =
-            format!("sc-{:x}", Sha256::digest(normalized.as_bytes()))[..11].to_owned();
-        let id = crate::trace_ids::explicit_goal_id(item)
-            .map(str::to_ascii_lowercase)
-            .unwrap_or_else(|| legacy_hash.clone());
-        if let Some(relative) = html[html_cursor..].find("<li>") {
-            let position = html_cursor + relative;
-            let legacy_alias = if id != legacy_hash {
-                format!(
-                    "<span id=\"{legacy_hash}\" class=\"criterion-anchor\" aria-hidden=\"true\"></span>"
-                )
-            } else {
-                String::new()
-            };
-            let replacement = format!(
-                "<li id=\"{id}\"><span id=\"sc-{criterion}\" class=\"criterion-anchor\" aria-hidden=\"true\"></span>{legacy_alias}"
-            );
-            html.replace_range(position..position + 4, &replacement);
-            html_cursor = position + replacement.len();
-        }
+        let Some(relative) = html[html_cursor..].find("<li>") else {
+            continue;
+        };
+        let position = html_cursor + relative;
+        html_cursor = position + 4;
+        let Some(id) = crate::trace_ids::explicit_goal_id(item).map(str::to_ascii_lowercase) else {
+            continue;
+        };
+        let replacement = format!("<li id=\"{id}\">");
+        html.replace_range(position..position + 4, &replacement);
+        html_cursor = position + replacement.len();
     }
 }
 
@@ -1071,12 +1059,7 @@ fn decorate_delivery_map(markdown: &str, html: &mut String, goal_id: Option<&str
             cursor,
             task_id,
             &format!("class=\"delivery-id\" id=\"{}\"", task_fragment),
-            &format!(
-                "<span id=\"task-{}\" class=\"criterion-anchor\" aria-hidden=\"true\"></span><a href=\"#{}\">{}</a>",
-                task_fragment,
-                task_fragment,
-                escape(task_id)
-            ),
+            &format!("<a href=\"#{}\">{}</a>", task_fragment, escape(task_id)),
         );
         if let Some(index) = goal_index {
             let goal_item = cells[index].trim();
@@ -1670,16 +1653,15 @@ mod tests {
     }
 
     #[test]
-    fn goal_success_criteria_receive_coverage_compatible_anchors() {
+    fn goal_success_criteria_receive_canonical_anchors() {
         let rendered = render_markdown(
-            "## Success Criteria\n\n- Stable result\n",
+            "## Success Criteria\n\n- [SC-001] Stable result\n",
             true,
             false,
             None,
         );
-        let expected = format!("sc-{:x}", Sha256::digest(b"Stable result"))[..11].to_owned();
-        assert!(rendered.contains(&format!("id=\"{expected}\"")));
-        assert!(rendered.contains("id=\"sc-1\""));
+        assert!(rendered.contains("id=\"sc-001\""));
+        assert!(!rendered.contains("id=\"sc-1\""));
     }
 
     #[test]
@@ -1691,7 +1673,7 @@ mod tests {
             Some("GOAL-20260712T000000-001-example"),
         );
         assert!(rendered.contains("id=\"t-001\""));
-        assert!(rendered.contains("id=\"task-t-001\""));
+        assert!(!rendered.contains("id=\"task-t-001\""));
         assert!(rendered.contains("href=\"#t-001\""));
         assert!(rendered.contains("href=\"/entries/GOAL-20260712T000000-001-example#sc-001\""));
         assert!(rendered.contains("href=\"/entries/GOAL-20260712T000000-001-example#sc-003\""));
@@ -1699,17 +1681,15 @@ mod tests {
     }
 
     #[test]
-    fn explicit_goal_ids_are_canonical_anchors_with_legacy_aliases() {
+    fn explicit_goal_ids_do_not_emit_legacy_aliases() {
         let rendered = render_markdown(
             "## Success Criteria\n\n- [SC-001] Stable result\n",
             true,
             false,
             None,
         );
-        let legacy = format!("sc-{:x}", Sha256::digest(b"Stable result"))[..11].to_owned();
         assert!(rendered.contains("id=\"sc-001\""));
-        assert!(rendered.contains(&format!("id=\"{legacy}\"")));
-        assert!(rendered.contains("id=\"sc-1\""));
+        assert!(!rendered.contains("id=\"sc-1\""));
     }
 
     #[test]
