@@ -5,8 +5,8 @@ type: review
 title: Review Explore node activation arbitration
 status: completed
 created_at: 2026-07-25T20:40:17+09:00
-updated_at: 2026-07-25T20:40:27+09:00
-revision: 4
+updated_at: 2026-07-27T20:14:27+09:00
+revision: 7
 tags: []
 links:
 - relation: reviews
@@ -52,3 +52,11 @@ metadata: {}
 ## Outcome
 
 Implementation is reviewable with no blocking code finding. Goal completion remains blocked on passing interaction Evidence and human acceptance.
+
+## Post-CI Follow-up
+
+- PR #16 GitHub Actions ran the Playwright interaction assertions successfully in a browser-capable environment.
+- EVD-20260725T134154-001 records passing CI against SC-004.
+- EVD-20260725T220721-001 records human acceptance of the corrected activation behavior.
+- PR #16 was squash merged after separate approval and Issue #15 was closed.
+- The review-time verification gap is resolved; no blocking finding remains for Goal completion.

@@ -3,10 +3,10 @@ schema_version: 1
 id: GOAL-20260712T163956-001-maintain-intent-to-evidence-alignment-during-age
 type: goal
 title: Maintain intent-to-evidence alignment during agent delivery
-status: draft
+status: completed
 created_at: 2026-07-12T16:39:56+09:00
-updated_at: 2026-07-24T21:44:40+09:00
-revision: 2
+updated_at: 2026-07-27T19:24:53+09:00
+revision: 5
 tags: []
 links: []
 metadata: {}
@@ -47,3 +47,11 @@ metadata: {}
 - A consistent but incorrect Intent Brief can create an orderly misunderstanding.
 - Delivery Maps can become stale or ceremonial.
 - Task modeling can expand Belay into project management.
+
+## Closure
+
+- REV-20260727T184743-001で5件のTier 2 / Tier 3 dogfoodingを評価し、MVP規約の実用的価値とstale-map overheadの両方を確認した。
+- EVD-20260727T192335-001およびEVD-20260727T192348-001から004がSC-001からSC-005を検証する。
+- DEC-20260727T192305-001により、first-class Plan lint、reconcile command、core completion gateは現時点で実装せず、具体的なreopen signalが観測された場合に新しいGoalで再評価する。
+- EVD-20260727T192321-001は、評価結果、T-004からT-006のdrop、現在のGoal closureに対する人間承認を記録する。
+- Unknown. repository外の利用で気づかれていない問題が存在する可能性は残る。

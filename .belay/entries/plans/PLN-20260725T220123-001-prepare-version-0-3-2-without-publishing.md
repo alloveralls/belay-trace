@@ -3,10 +3,10 @@ schema_version: 1
 id: PLN-20260725T220123-001-prepare-version-0-3-2-without-publishing
 type: plan
 title: Prepare version 0.3.2 without publishing
-status: approved
+status: completed
 created_at: 2026-07-25T22:01:23+09:00
-updated_at: 2026-07-25T22:40:29+09:00
-revision: 9
+updated_at: 2026-07-27T20:14:27+09:00
+revision: 12
 tags: []
 links:
 - relation: fulfills

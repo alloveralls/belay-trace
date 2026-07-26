@@ -3,10 +3,10 @@ schema_version: 1
 id: GOAL-20260725T220102-001-prepare-a-validated-0-3-2-patch-release
 type: goal
 title: Prepare a validated 0.3.2 patch release
-status: active
+status: completed
 created_at: 2026-07-25T22:01:02+09:00
-updated_at: 2026-07-25T22:40:29+09:00
-revision: 4
+updated_at: 2026-07-27T20:14:27+09:00
+revision: 8
 tags: []
 links: []
 metadata: {}
@@ -47,3 +47,11 @@ Prepare version 0.3.2 for the backward-compatible Browse activation and readabil
 - The repository currently has no remote tags or GitHub Releases, so the intended public release mechanism is Unknown.
 - Local Playwright execution is unavailable in the current environment.
 - Existing active Goal and AGENTS integration drift can keep doctor non-passing even if the version fields are correct.
+
+## Completion
+
+- Cargo.toml、Cargo.lock、rebuild済みbinaryは0.3.2で一致し、dependency churnはない。
+- PR #16 CIでRustとPlaywrightを含む全required checksが成功し、EVD-20260725T134154-002がSC-003を検証する。
+- PR #16は個別のhuman approval後にsquash mergeされ、EVD-20260726T111216-001がSC-004の承認境界を記録する。
+- tag、GitHub Release、registry publicationは実行しておらず、引き続き別の明示承認を必要とする。
+- SC-001からSC-004はすべてverifiedであり、0.3.2 release candidate準備Goalは完了した。

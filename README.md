@@ -59,6 +59,18 @@ make belay entries the source of truth for plans, decisions, work, and reviews.
 repository-specific instructions outside that section remain under normal human
 review.
 
+Agent guidance has three separate sources of truth:
+
+- repository `AGENTS.md` owns repository-specific policy, approval gates, and
+  prohibitions;
+- the generated and repository-installed `belay-trace` Skill owns reusable
+  workflow recipes, decision points, and recovery procedures;
+- `belay <command> --help` owns complete command and option syntax.
+
+Do not copy the full CLI reference into AGENTS.md or the Skill. A one-time help
+lookup for an unlisted option or exceptional operation is expected; repeated
+lookup of the same routine or an invalid invocation indicates a guidance gap.
+
 ## Create And Link Traces
 
 Create entries non-interactively with inline content, a file, or standard input:
@@ -240,6 +252,24 @@ belay doctor
 Doctor checks configuration, SQLite schema and foreign keys, FTS5/BM25,
 managed Markdown validity, Goal sections, Evidence freshness, sync drift,
 temporary files, and agent integration.
+
+Agent integration checks describe repository files, not agent runtime internals:
+
+| State | Repository observation | Recovery |
+| --- | --- | --- |
+| generated `present` | Canonical generated artifact exists; activation is not implied | None |
+| generated `missing` or `stale` | Canonical artifact is absent or differs | `belay init` |
+| integration `inactive` | Optional AGENTS/Skill target is absent | `belay init --update-agents` or `belay init --install-skill <target>` |
+| integration `active` | Target exactly matches canonical generated content | None |
+| integration `stale` | Target exists but differs from canonical content | Refresh with the matching explicit init option |
+| integration `malformed` | The marker-managed AGENTS block has an unsafe marker structure | Repair to one ordered marker pair, then run `belay init --update-agents` |
+
+Installed Skill content that differs from canonical content is reported as
+`stale`; `malformed` currently applies to the marker-managed AGENTS block.
+`active` does not prove that Codex or Claude loaded the Skill. Runtime
+recognition must come from the agent surface, and successful command execution
+is a third, separate observation. Report either runtime state as Unknown when
+there is no direct evidence.
 
 Rebuild SQLite and search indexes from all validated managed Markdown:
 
