@@ -230,7 +230,7 @@ existence of a test or code change.
   parsed safely; repair the marker pair before refreshing it.
 
 Installed Skill content that differs from canonical content is `stale`, not
-`malformed`. Generated, installed, and repository-active state do not prove
+`malformed`. Generated, installed, and repository-active states do not prove
 runtime recognition. Runtime recognition is a separate observation, and
 successful command execution is separate again. Report either as Unknown unless
 the agent surface provides direct evidence.

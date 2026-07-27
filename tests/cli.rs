@@ -227,7 +227,7 @@ fn init_is_idempotent_and_does_not_modify_agents_md() {
     assert!(skill.contains("### Record assurance and inspect coverage"));
     assert!(skill.contains("belay verify status <goal-id>#sc-001"));
     assert!(skill.contains("## Diagnose agent integration"));
-    assert!(skill.contains("repository-active state do not prove"));
+    assert!(skill.contains("repository-active states do not prove"));
     assert!(claude_skill.contains("`CLAUDE.md`"));
     assert_eq!(skill, claude_skill);
 }
