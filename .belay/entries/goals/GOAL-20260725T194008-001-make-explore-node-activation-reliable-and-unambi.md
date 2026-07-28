@@ -3,10 +3,10 @@ schema_version: 1
 id: GOAL-20260725T194008-001-make-explore-node-activation-reliable-and-unambi
 type: goal
 title: Make Explore node activation reliable and unambiguous
-status: active
+status: completed
 created_at: 2026-07-25T19:40:08+09:00
-updated_at: 2026-07-25T20:27:57+09:00
-revision: 3
+updated_at: 2026-07-27T20:14:27+09:00
+revision: 7
 tags: []
 links: []
 metadata: {}
@@ -47,3 +47,10 @@ metadata: {}
 - 短すぎる判定窓では競合が残り、長すぎる判定窓ではシングルクリックの応答性が悪化する。
 - 非同期の展開処理が判定窓の後に残ると、ページ移動直前のgraph mutationや重複展開が起きる可能性がある。
 - CI環境の入力timingに依存したテストはflakyになり得るため、内部timerの経過だけでなく観測可能な遷移・graph状態を検証する必要がある。
+
+## Completion
+
+- PR #16 CIでRustとPlaywrightを含む全checksが成功し、EVD-20260725T134154-001がSC-004を検証する。
+- EVD-20260725T220721-001が修正後の操作に対するhuman acceptanceを記録する。
+- PR #16は明示承認後にsquash mergeされ、Issue #15はcloseされた。
+- SC-001からSC-004はすべてverifiedであり、未検証またはblockedのDelivery Map taskは残っていない。

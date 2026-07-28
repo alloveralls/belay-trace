@@ -85,6 +85,33 @@ fn every_command_help_has_the_required_structure() {
 }
 
 #[test]
+fn doctor_help_separates_repository_state_from_runtime_observations() {
+    let output = belay()
+        .args(["doctor", "--help"])
+        .output()
+        .expect("run doctor help");
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("help is UTF-8");
+    for expected in [
+        "Agent Integration States:",
+        "generated present",
+        "inactive",
+        "active",
+        "stale",
+        "malformed",
+        "repository observations",
+        "does not claim that an agent runtime",
+        "belay init --install-skill codex",
+        "belay init --install-skill claude",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "missing doctor guidance: {expected}"
+        );
+    }
+}
+
+#[test]
 fn browse_help_is_loopback_only_and_uninitialized_is_exit_three() {
     let help = belay()
         .args(["browse", "--help"])
@@ -182,6 +209,9 @@ fn init_is_idempotent_and_does_not_modify_agents_md() {
     assert!(snippet.contains("Treat `implemented` and `verified` as different states"));
     assert!(snippet.contains("Current state counts; Goal coverage"));
     assert!(snippet.contains("Before completion, use a fresh context"));
+    assert!(snippet.contains("### Guidance boundaries"));
+    assert!(snippet.contains("complete syntax reference"));
+    assert!(snippet.contains("agent runtime loaded"));
     assert!(skill.contains("Repository-specific policy belongs"));
     assert!(skill.contains("Use for Tier 2 or Tier 3 coding work"));
     assert!(skill.contains("## Frame"));
@@ -190,6 +220,14 @@ fn init_is_idempotent_and_does_not_modify_agents_md() {
     assert!(skill.contains("## Assure completion"));
     assert!(skill.contains("implemented, unverified"));
     assert!(skill.contains("None identified"));
+    assert!(skill.contains("### Create and connect lifecycle entries"));
+    assert!(skill.contains("belay link <work-id> <goal-id> --relation fulfills"));
+    assert!(skill.contains("### Reconcile direct Markdown edits safely"));
+    assert!(skill.contains("belay sync --prefer markdown <entry-id>"));
+    assert!(skill.contains("### Record assurance and inspect coverage"));
+    assert!(skill.contains("belay verify status <goal-id>#sc-001"));
+    assert!(skill.contains("## Diagnose agent integration"));
+    assert!(skill.contains("repository-active states do not prove"));
     assert!(claude_skill.contains("`CLAUDE.md`"));
     assert_eq!(skill, claude_skill);
 }
@@ -548,11 +586,15 @@ fn doctor_reports_generated_active_inactive_stale_and_missing_agent_states() {
     assert!(inactive.status.success(), "{inactive:?}");
     let stdout = String::from_utf8(inactive.stdout).expect("stdout is UTF-8");
     assert!(stdout.contains("generated AGENTS snippet: present"));
+    assert!(stdout.contains("canonical generated artifact exists"));
     assert!(stdout.contains("AGENTS.md integration: inactive"));
+    assert!(stdout.contains("belay init --update-agents"));
     assert!(stdout.contains("generated Codex skill: present"));
     assert!(stdout.contains("installed Codex skill: inactive"));
+    assert!(stdout.contains("belay init --install-skill codex"));
     assert!(stdout.contains("generated Claude skill: present"));
     assert!(stdout.contains("installed Claude skill: inactive"));
+    assert!(stdout.contains("belay init --install-skill claude"));
 
     let activated = belay()
         .args(["init", "--update-agents", "--install-skill", "codex"])
@@ -576,6 +618,7 @@ fn doctor_reports_generated_active_inactive_stale_and_missing_agent_states() {
     assert!(stdout.contains("AGENTS.md integration: active"));
     assert!(stdout.contains("installed Codex skill: active"));
     assert!(stdout.contains("installed Claude skill: active"));
+    assert!(stdout.contains("runtime recognition and execution are not checked"));
 
     fs::write(
         temporary.path().join(".agents/skills/belay-trace/SKILL.md"),
@@ -597,8 +640,11 @@ fn doctor_reports_generated_active_inactive_stale_and_missing_agent_states() {
     assert_eq!(unhealthy.status.code(), Some(5));
     let stdout = String::from_utf8(unhealthy.stdout).expect("stdout is UTF-8");
     assert!(stdout.contains("generated AGENTS snippet: missing"));
+    assert!(stdout.contains("run `belay init` to refresh canonical generated artifacts"));
     assert!(stdout.contains("installed Codex skill: stale"));
+    assert!(stdout.contains("run `belay init --install-skill codex`"));
     assert!(stdout.contains("installed Claude skill: stale"));
+    assert!(stdout.contains("run `belay init --install-skill claude`"));
     let stderr = String::from_utf8(unhealthy.stderr).expect("stderr is UTF-8");
     assert!(stderr.contains("belay init"));
 }
@@ -662,11 +708,9 @@ fn doctor_classifies_generated_and_agents_drift_and_malformed_markers() {
         .output()
         .expect("doctor malformed AGENTS integration");
     assert_eq!(malformed.status.code(), Some(4));
-    assert!(
-        String::from_utf8(malformed.stdout)
-            .expect("stdout is UTF-8")
-            .contains("AGENTS.md integration: malformed")
-    );
+    let stdout = String::from_utf8(malformed.stdout).expect("stdout is UTF-8");
+    assert!(stdout.contains("AGENTS.md integration: malformed"));
+    assert!(stdout.contains("repair to exactly one ordered belay-trace marker pair"));
     assert!(
         String::from_utf8(malformed.stderr)
             .expect("stderr is UTF-8")

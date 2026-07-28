@@ -3,10 +3,10 @@ schema_version: 1
 id: PLN-20260722T225244-001-add-a-local-trace-provenance-browser
 type: plan
 title: Add a local trace provenance browser
-status: approved
+status: completed
 created_at: 2026-07-22T22:52:44+09:00
-updated_at: 2026-07-24T21:44:40+09:00
-revision: 6
+updated_at: 2026-07-27T18:38:09+09:00
+revision: 8
 tags: []
 links:
 - relation: supports
@@ -114,12 +114,18 @@ belay browse [--port PORT] [--open]
 
 | ID | Outcome / Task | State | Verification |
 | --- | --- | --- | --- |
-| T-001 | `belay browse` CLI、loopback server、help/READMEを追加 | implemented | CLI integration tests passed; WRK-20260722T231453-001-implement-local-trace-provenance-browser |
-| T-002 | atomic in-memory SQLite snapshot、drift診断、既存search再利用を実装 | implemented | snapshot/search/drift tests passed; WRK-20260722T231453-001-implement-local-trace-provenance-browser |
-| T-003 | sanitize済みReader、Library、internal API、security headersを実装 | implemented | Rust HTTP/XSS tests passed; readability and Delivery Map navigation inspected in Browse; WRK-20260722T231453-001-implement-local-trace-provenance-browser; WRK-20260723T192431-001-refine-browse-readability-and-trace-navigation; EVD-20260723T200110-001 |
-| T-004 | Evidence限定Git reader、first-parent diff、historical blob表示を実装 | implemented | isolated Git fixtures passed; WRK-20260722T231453-001-implement-local-trace-provenance-browser |
-| T-005 | Cytoscape.jsによる意味別段階展開とaccessible HTML導線を実装 | implemented | Goal-first graph, distinct type colors, staged expansion, and Goal item links inspected in Browse; WRK-20260723T192431-001-refine-browse-readability-and-trace-navigation; EVD-20260723T200110-001; standalone Playwright remains pending Linux CI (EVD-20260723T200110-002) |
-| T-006 | Rust 1.87 CI、Playwright job、dogfooding手順を統合 | implemented | Rust 1.87 locked fmt, clippy, 110 tests, rebuild, and doctor passed (EVD-20260723T200110-001); Playwright job remains pending Linux CI (EVD-20260723T200110-002) |
+| T-001 | `belay browse` CLI、loopback server、help/READMEを追加 | verified | CLI integration tests passed; WRK-20260722T231453-001-implement-local-trace-provenance-browser |
+| T-002 | atomic in-memory SQLite snapshot、drift診断、既存search再利用を実装 | verified | snapshot/search/drift tests passed; WRK-20260722T231453-001-implement-local-trace-provenance-browser |
+| T-003 | sanitize済みReader、Library、internal API、security headersを実装 | verified | Rust HTTP/XSS tests passed; readability and Delivery Map navigation inspected in Browse; WRK-20260722T231453-001-implement-local-trace-provenance-browser; WRK-20260723T192431-001-refine-browse-readability-and-trace-navigation; EVD-20260723T200110-001 |
+| T-004 | Evidence限定Git reader、first-parent diff、historical blob表示を実装 | verified | isolated Git fixtures passed; WRK-20260722T231453-001-implement-local-trace-provenance-browser |
+| T-005 | Cytoscape.jsによる意味別段階展開とaccessible HTML導線を実装 | verified | Goal-first graph, distinct type colors, staged expansion, Goal item links, and canvas-independent fallback were inspected or exercised by EVD-20260723T200110-001 and the later passing PR #16 Playwright Evidence EVD-20260725T134154-001 / EVD-20260725T134154-005 |
+| T-006 | Rust 1.87 CI、Playwright job、dogfooding手順を統合 | verified | Rust 1.87 locked fmt, clippy, tests, rebuild, and doctor passed locally (EVD-20260723T200110-001); the previously pending Linux Playwright run passed in PR #16 under EVD-20260725T134154-002 and EVD-20260725T222128-002 |
+
+## Completion Reconciliation
+
+- EVD-20260723T200110-002 correctly recorded the local macOS Chromium launch limitation and the then-pending Linux CI result.
+- PR #16 later ran the release-candidate Playwright suite successfully in Linux CI. EVD-20260725T134154-001、EVD-20260725T134154-002、EVD-20260725T134154-005、EVD-20260725T222128-002 resolve the pending verification without rewriting the earlier warning.
+- All Delivery Map tasks are now verified. Related implementation and refinement Work entries are completed, and the Plan can be completed.
 
 ## Test and Acceptance
 

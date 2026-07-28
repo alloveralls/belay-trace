@@ -350,6 +350,13 @@ Record the validation outcome in the work and review entries.
 - Never overwrite an unresolved sync conflict. Inspect it and use an explicit `belay sync --prefer markdown <id>` or `belay sync --prefer sqlite <id>` only after the intended source of truth is known.
 - Do not scan `.belay/entries/` broadly unless a specific source path is required.
 
+### Guidance boundaries
+
+- Keep repository-specific policy and human approval gates in `AGENTS.md`.
+- Use the repository-installed `belay-trace` Skill for reusable workflow recipes and recovery decisions.
+- Use `belay <command> --help` as the complete syntax reference for options and exceptional operations.
+- Treat `belay doctor` agent states as repository observations only. They do not prove that an agent runtime loaded the Skill or can execute its commands.
+
 ### Review and documentation boundaries
 
 - Independent review requires context separation: use a fresh sub-agent or session that did not implement the change. Higher reasoning effort in the implementation context is not independent review.
