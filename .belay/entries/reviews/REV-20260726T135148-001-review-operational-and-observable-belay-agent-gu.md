@@ -5,8 +5,8 @@ type: review
 title: Review operational and observable Belay agent guidance
 status: completed
 created_at: 2026-07-26T13:51:48+09:00
-updated_at: 2026-07-26T14:12:30+09:00
-revision: 4
+updated_at: 2026-07-28T20:20:12+09:00
+revision: 5
 tags: []
 links:
 - relation: reviews
@@ -75,3 +75,11 @@ metadata: {}
 - EVD-20260726T141140-001 and EVD-20260726T141140-002 address the behavioral execution finding. SC-004 and T-006 can now be verified for the pre-registered qualitative outcomes.
 - The causal claim remains Unknown: baseline Claude execution was blocked, completed-run denominators differ, and the larger Skill was not recognized in S-004.
 - The Claude transcripts were inspected by the independent scorer but remain external and unversioned. The Codex transcript limitation is unchanged.
+
+## Pull Request Follow-up
+
+- Copilot reviewed all 53 files in PR #17 and reported one Low-severity grammar issue in the user-facing Skill text: singular `state` was paired with plural `do not prove`.
+- The finding was addressed consistently in the canonical Skill source, generated and installed Codex / Claude Skills, and the CLI test assertion in commit `533b16e048e662cc05949acbb9c6aa12e8c60afd`.
+- Rust 1.87 fmt, clippy, and all 124 tests passed locally after the correction. The final PR head then passed all nine GitHub checks, recorded as EVD-20260728T201944-001.
+- No additional Copilot review thread or blocking review finding was present.
+- PR #17 was merged into `main` as `d03ae146edf74156d62b00e6848c1bf1962054c6`.

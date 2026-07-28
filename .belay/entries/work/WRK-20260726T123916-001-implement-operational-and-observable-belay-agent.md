@@ -5,8 +5,8 @@ type: work
 title: Implement operational and observable Belay agent guidance
 status: completed
 created_at: 2026-07-26T12:39:16+09:00
-updated_at: 2026-07-27T19:16:15+09:00
-revision: 14
+updated_at: 2026-07-28T20:20:12+09:00
+revision: 15
 tags: []
 links:
 - relation: fulfills
@@ -69,3 +69,11 @@ metadata: {}
 - Final repository integration validation passed after the Codex Skill refresh.
 - Raw Codex transcripts were not exposed. Claude raw transcripts were inspected by the independent scorer but remain external to the repository, so checkout-local transcript reproduction remains unavailable.
 - Final human acceptance was recorded as EVD-20260727T183606-001.
+
+## Pull Request Delivery
+
+- [PR #17](https://github.com/alloveralls/belay-trace/pull/17) carried the completed agent-guidance implementation, Phase 6 closure records, and trace reconciliation.
+- Copilot reviewed all 53 changed files and raised one actionable grammar finding. Commit `533b16e048e662cc05949acbb9c6aa12e8c60afd` changed `repository-active state do not prove` to `repository-active states do not prove` in the canonical source, test assertion, and generated Codex / Claude Skills.
+- The final PR head passed all nine GitHub checks, including Rust 1.87, Playwright, documentation, links, typos, and PR title validation. EVD-20260728T201944-001 records the CI result.
+- PR #17 was merged into `main` on 2026-07-28 at 09:32:03 UTC as commit `d03ae146edf74156d62b00e6848c1bf1962054c6`.
+- Tagging, GitHub Release creation, and registry publication were not part of PR #17.
