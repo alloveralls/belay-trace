@@ -494,12 +494,19 @@ fn valid_slug(slug: &str) -> bool {
 }
 
 pub fn slugify(title: &str) -> String {
+    const MAX_SLUG_LENGTH: usize = 24;
+
     let mut slug = String::new();
     let mut pending_separator = false;
 
-    for character in title.chars().flat_map(char::to_lowercase) {
-        if character.is_alphanumeric() {
-            if pending_separator && !slug.is_empty() {
+    for character in title.chars() {
+        let character = character.to_ascii_lowercase();
+        if character.is_ascii_alphanumeric() {
+            let separator_length = usize::from(pending_separator && !slug.is_empty());
+            if slug.len() + separator_length + 1 > MAX_SLUG_LENGTH {
+                break;
+            }
+            if separator_length == 1 {
                 slug.push('-');
             }
             slug.push(character);
@@ -507,14 +514,8 @@ pub fn slugify(title: &str) -> String {
         } else {
             pending_separator = true;
         }
-        if slug.chars().count() >= 48 {
-            break;
-        }
     }
 
-    while slug.ends_with('-') {
-        slug.pop();
-    }
     if slug.is_empty() {
         "entry".to_owned()
     } else {
@@ -669,7 +670,13 @@ mod tests {
             slugify("Use SQLite: Runtime Store"),
             "use-sqlite-runtime-store"
         );
-        assert_eq!(slugify("日本語の計画"), "日本語の計画");
+        assert_eq!(slugify("日本語の計画"), "entry");
+        assert_eq!(slugify("Route 日本語 Design"), "route-design");
+        assert_eq!(
+            slugify("This title is intentionally much longer than twenty four characters"),
+            "this-title-is-intentiona"
+        );
+        assert!(slugify("a very long title with separators").len() <= 24);
         assert_eq!(slugify("---"), "entry");
     }
 

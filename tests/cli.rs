@@ -200,34 +200,25 @@ fn init_is_idempotent_and_does_not_modify_agents_md() {
         .expect("read generated skill");
     let claude_skill = fs::read_to_string(temporary.path().join(".belay/agent/claude/SKILL.md"))
         .expect("read generated Claude skill");
-    assert!(snippet.contains("Never overwrite an unresolved sync conflict"));
-    assert!(snippet.contains("Tier 1 (small, reversible changes)"));
-    assert!(snippet.contains("Independent review requires context separation"));
-    assert!(snippet.contains("--kind human-approval"));
-    assert!(snippet.contains("Delivery assurance for Tier 2 and Tier 3"));
-    assert!(snippet.contains("Problem, Desired Outcome, Success Signals"));
-    assert!(snippet.contains("Treat `implemented` and `verified` as different states"));
-    assert!(snippet.contains("Current state counts; Goal coverage"));
-    assert!(snippet.contains("Before completion, use a fresh context"));
-    assert!(snippet.contains("### Guidance boundaries"));
-    assert!(snippet.contains("complete syntax reference"));
-    assert!(snippet.contains("agent runtime loaded"));
-    assert!(skill.contains("Repository-specific policy belongs"));
+    assert!(snippet.contains("For Tier 2 and Tier 3 work"));
+    assert!(snippet.contains("repository-installed"));
+    assert!(snippet.contains("belay context compile"));
+    assert!(snippet.contains("human approval gates"));
+    assert!(!snippet.contains("### Delivery assurance"));
+    assert!(skill.contains("Repository-specific policy"));
     assert!(skill.contains("Use for Tier 2 or Tier 3 coding work"));
+    assert!(skill.contains("## Command reference"));
+    assert!(skill.contains("## Token discipline"));
+    assert!(skill.contains("belay sync\n"));
+    assert!(!skill.contains("grep -v"));
     assert!(skill.contains("## Frame"));
     assert!(skill.contains("## Map"));
     assert!(skill.contains("## Execute"));
     assert!(skill.contains("## Assure completion"));
     assert!(skill.contains("implemented, unverified"));
     assert!(skill.contains("None identified"));
-    assert!(skill.contains("### Create and connect lifecycle entries"));
-    assert!(skill.contains("belay link <work-id> <goal-id> --relation fulfills"));
-    assert!(skill.contains("### Reconcile direct Markdown edits safely"));
-    assert!(skill.contains("belay sync --prefer markdown <entry-id>"));
-    assert!(skill.contains("### Record assurance and inspect coverage"));
-    assert!(skill.contains("belay verify status <goal-id>#sc-001"));
-    assert!(skill.contains("## Diagnose agent integration"));
-    assert!(skill.contains("repository-active states do not prove"));
+    assert!(skill.contains("Entry titles must be short English kebab-case"));
+    assert!(skill.contains("Use terminal statuses"));
     assert!(claude_skill.contains("`CLAUDE.md`"));
     assert_eq!(skill, claude_skill);
 }
@@ -313,9 +304,9 @@ fn update_script_refreshes_only_previously_active_integrations() {
         fs::read_to_string(temporary.path().join(".belay/agent/AGENTS.md.snippet"))
             .expect("read generated snippet");
     let agents = fs::read_to_string(temporary.path().join("AGENTS.md")).expect("read AGENTS.md");
-    assert!(generated_snippet.contains("Delivery assurance for Tier 2 and Tier 3"));
+    assert!(generated_snippet.contains("For Tier 2 and Tier 3 work"));
     assert!(agents.starts_with("# Project policy\n"));
-    assert!(agents.contains("Delivery assurance for Tier 2 and Tier 3"));
+    assert!(agents.contains("For Tier 2 and Tier 3 work"));
 
     let generated_codex = fs::read_to_string(temporary.path().join(".belay/agent/codex/SKILL.md"))
         .expect("read generated Codex skill");
@@ -683,7 +674,10 @@ fn doctor_classifies_generated_and_agents_drift_and_malformed_markers() {
     let agents_path = temporary.path().join("AGENTS.md");
     let stale_agents = fs::read_to_string(&agents_path)
         .expect("read AGENTS.md")
-        .replace("Run `belay context", "Run stale `belay context");
+        .replace(
+            "For Tier 2 and Tier 3 work",
+            "For stale Tier 2 and Tier 3 work",
+        );
     fs::write(&agents_path, stale_agents).expect("stale AGENTS integration");
     let stale = belay()
         .arg("doctor")
@@ -2888,6 +2882,51 @@ fn doctor_reports_sync_drift_temporary_files_and_invalid_mirrors() {
             .expect("stdout is UTF-8")
             .contains("managed Markdown: invalid")
     );
+}
+
+#[test]
+fn sync_suppresses_unchanged_details_and_summarizes_them() {
+    let temporary = initialize_repository();
+    let decision = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Quiet sync",
+                "--body",
+                "No changes",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add decision"),
+    );
+
+    let unchanged = belay()
+        .arg("sync")
+        .current_dir(temporary.path())
+        .output()
+        .expect("sync unchanged entry");
+    assert!(unchanged.status.success(), "{unchanged:?}");
+    let stdout = String::from_utf8(unchanged.stdout).expect("stdout is UTF-8");
+    assert!(!stdout.contains(&format!("{decision}: unchanged")));
+    assert!(stdout.contains("Sync completed: 1 entries (1 unchanged)"));
+
+    let mirror = mirror_path(temporary.path(), "decisions", &decision);
+    let edited = fs::read_to_string(&mirror)
+        .expect("read decision mirror")
+        .replace("No changes", "Markdown changed");
+    fs::write(&mirror, edited).expect("edit decision mirror");
+    let changed = belay()
+        .args(["sync", &decision])
+        .current_dir(temporary.path())
+        .output()
+        .expect("sync changed entry");
+    assert!(changed.status.success(), "{changed:?}");
+    let stdout = String::from_utf8(changed.stdout).expect("stdout is UTF-8");
+    assert!(stdout.contains(&decision));
+    assert!(stdout.contains("imported Markdown"));
+    assert!(stdout.contains("Sync completed: 1 entries (0 unchanged)"));
 }
 
 #[test]
