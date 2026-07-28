@@ -71,12 +71,95 @@ Use a fresh context that did not implement the change to review the Intent Brief
 
 ## Update trace
 
-1. Use `belay add goal` for intent, then link Work/Decision entries to it with `fulfills`.
-2. Run `belay goal lint <goal-id>` after drafting or materially editing a Goal.
-3. Use `belay add`, `belay link`, and `belay status <id> <status>` for structured updates.
-4. Record validation with `belay verify record` and inspect `belay coverage` before release decisions.
-5. Run `belay sync` after direct managed Markdown edits.
-6. Run `belay doctor` when generated or active integration may be stale.
+Use these recipes for routine operations. Replace placeholders with display IDs
+printed by Belay. Use `belay <command> --help` for options or status values not
+shown here; help is the complete syntax reference.
+
+### Orient without a broad scan
+
+```sh
+belay context compile "<task>" --format agent --budget 4000
+belay search "<targeted query>"
+belay show <entry-id>
+belay goal lint <goal-id>
+```
+
+If the installed Belay version has no `context compile`, fall back once to:
+
+```sh
+belay context "<task>" --format agent --budget 2500
+```
+
+### Create and connect lifecycle entries
+
+```sh
+belay add work --title "<title>" --body-file <path>
+belay link <work-id> <goal-id> --relation fulfills
+belay status <work-id> completed
+```
+
+Use the same `belay add` shape for a Decision or Review. Direction matters:
+the source entry is first. Typical links are Work `implements` Decision and
+Review `reviews` Work. Do not transition a Plan to `approved`, create an issue
+or pull request, start implementation, or merge without the applicable human
+approval.
+
+### Reconcile direct Markdown edits safely
+
+```sh
+belay sync
+belay show <entry-id>
+```
+
+If sync reports a two-sided conflict, inspect the SQLite view from `belay show`
+and the specific Markdown source path it reports. Only after choosing the
+intended source of truth, resolve that one entry and confirm convergence:
+
+```sh
+belay sync --prefer markdown <entry-id>
+belay sync
+belay show <entry-id>
+```
+
+Use `--prefer sqlite` instead only when SQLite is the confirmed source of truth.
+Never use a blanket preference for unresolved conflicts.
+
+### Record assurance and inspect coverage
+
+```sh
+belay verify record \
+  --kind test \
+  --verdict pass \
+  --source "<command-or-run-url>" \
+  --issuer "<actor>" \
+  --summary "<observable result>" \
+  --verifies <goal-id>#sc-001
+belay verify status <goal-id>#sc-001
+belay coverage
+belay doctor
+```
+
+Evidence must verify the outcome named by the criterion, not merely the
+existence of a test or code change.
+
+## Diagnose agent integration
+
+`belay doctor` reports deterministic repository state:
+
+- generated `present` means the canonical artifact exists; `missing` or
+  `stale` is repaired with `belay init`;
+- repository integration `inactive` means the optional active target is absent;
+- `active` means the active target exactly matches canonical generated content;
+- `stale` means an active or generated file differs and must be refreshed with
+  `belay init --update-agents` or `belay init --install-skill <target>`;
+- `malformed` currently means the marker-managed `AGENTS.md` block cannot be
+  parsed safely; repair the marker pair before refreshing it.
+
+Installed Skill content that differs from canonical content is `stale`, not
+`malformed`. Generated, installed, and repository-active states do not prove
+runtime recognition. Runtime recognition is a separate observation, and
+successful command execution is separate again. Report either as Unknown unless
+the agent surface provides direct evidence.
 
 ## Conflict safety
 

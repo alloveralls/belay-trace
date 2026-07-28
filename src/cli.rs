@@ -322,8 +322,22 @@ const DOCTOR_AFTER_HELP: &str = r#"Behavior and Side Effects:
   managed Markdown validity, duplicate IDs, path rules, sync drift, orphaned
   temporary files, and generated or active agent integration.
 
+Agent Integration States:
+  generated present  Canonical artifact exists; activation is not implied
+  inactive           Optional repository target is absent
+  active             Repository target exactly matches canonical content
+  stale              File differs; refresh it with the reported init command
+  malformed          AGENTS.md marker structure is unsafe and must be repaired
+
+  These are repository observations. Doctor does not claim that an agent runtime
+  loaded the Skill or can execute its commands.
+
 Examples:
   belay doctor
+  belay init
+  belay init --update-agents
+  belay init --install-skill codex
+  belay init --install-skill claude
 
 Exit Status:
   0  Checks passed

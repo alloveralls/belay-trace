@@ -3,10 +3,10 @@ schema_version: 1
 id: PLN-20260725T194011-001-resolve-explore-single-and-double-click-contenti
 type: plan
 title: Resolve Explore single and double click contention
-status: approved
+status: completed
 created_at: 2026-07-25T19:40:11+09:00
-updated_at: 2026-07-25T22:18:31+09:00
-revision: 8
+updated_at: 2026-07-27T20:14:27+09:00
+revision: 13
 tags: []
 links:
 - relation: references
@@ -78,18 +78,26 @@ metadata: {}
 
 | ID | Goal Criteria | Outcome / Task | State | Verification |
 | --- | --- | --- | --- | --- |
-| T-001 | SC-001, SC-002 | Explore nodeのsingle/double clickを排他的に調停し、保留timerとstale callbackを安全にcleanupする | implemented | `src/browse.js`のfocused reviewとinteraction test結果 |
-| T-002 | SC-001, SC-002 | 実nodeへの反復double clickが詳細へ移動して展開せず、single clickが一度だけ展開するPlaywright回帰testを追加する | implemented | 新規Playwright testを単独・suite内で実行しpassをEvidence化 |
-| T-003 | SC-003 | Accessible Goal listとkeyboard/canvas-independent導線が変更されず利用可能であることを確認する | implemented | 既存accessibility導線のPlaywright assertionと変更差分review |
-| T-004 | SC-004 | fmt、clippy、全target test、Playwright E2E、rebuild、doctorを実行する | blocked | 各commandのpassing outputをGoalに紐づくEvidenceとして記録 |
+| T-001 | SC-001, SC-002 | Explore nodeのsingle/double clickを排他的に調停し、保留timerとstale callbackを安全にcleanupする | verified | PR #16 Playwright interaction assertions; EVD-20260725T134154-003, EVD-20260725T134154-004 |
+| T-002 | SC-001, SC-002 | 実nodeへの反復double clickが詳細へ移動して展開せず、single clickが一度だけ展開するPlaywright回帰testを追加する | verified | PR #16 Playwright interaction assertions; EVD-20260725T134154-003, EVD-20260725T134154-004 |
+| T-003 | SC-003 | Accessible Goal listとkeyboard/canvas-independent導線が変更されず利用可能であることを確認する | verified | PR #16 Playwright accessibility assertionsと変更差分review; EVD-20260725T134154-005 |
+| T-004 | SC-004 | fmt、clippy、全target test、Playwright E2E、rebuild、doctorを実行する | verified | local Rust/rebuild/doctor結果とPR #16 CI; EVD-20260725T134154-001 |
 | T-005 | SC-001, SC-002, SC-003, SC-004 | fresh contextで実装diff、Goal、Plan、Evidenceを照合し、findingを解消または明示する | verified | Review entryをWorkに`reviews`でlinkし、全SC coverageを確認 |
-| T-006 | SC-001, SC-002, SC-003, SC-004 | 人間が修正後の操作結果を受入れ、Goal達成可否を判断する | blocked | human-acceptance Evidence |
+| T-006 | SC-001, SC-002, SC-003, SC-004 | 人間が修正後の操作結果を受入れ、Goal達成可否を判断する | verified | EVD-20260725T220721-001 human-acceptance Evidence |
 
 ## Acceptance and Evidence
 
 - `implemented`はcode/test定義が存在する状態、`verified`は該当結果を確認したEvidenceが存在する状態として分離する。
 - T-002は単にtimeout完了を待つのではなく、URL、node/edge数、またはAPI request回数など観測可能な結果を検証する。
 - 全Success Criterionを検証するEvidenceとhuman acceptanceが揃うまでGoalをcompletedとして扱わない。
+
+## Post-CI Reconciliation
+
+- PR #16のGitHub ActionsでRustとPlaywrightを含む全9 checksが成功した。
+- Playwrightはsingle click、double click、Accessible Goal fallbackを実browserで検証した。SC-001からSC-003への結果はEVD-20260725T134154-003からEVD-20260725T134154-005、検証suite全体の通過はEVD-20260725T134154-001としてSC-004へ記録した。
+- 人間の操作受入はEVD-20260725T220721-001として記録済みであり、T-006を満たす。
+- PR #16は明示承認後にsquash mergeされ、Issue #15はcloseされた。
+- T-001からT-006はすべてverifiedであり、未検証またはblockedのDelivery Map taskは残っていない。
 
 ## References
 

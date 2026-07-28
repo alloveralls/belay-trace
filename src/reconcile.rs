@@ -1130,7 +1130,7 @@ pub fn doctor(repository: &Repository) -> DoctorReport {
                 checks.push(DoctorCheck {
                     name: check.name.to_owned(),
                     status: check.status.as_str(),
-                    detail: check.path.display().to_string(),
+                    detail: check.detail(),
                 });
             }
         }
