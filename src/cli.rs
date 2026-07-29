@@ -1031,14 +1031,27 @@ fn execute(cli: Cli, current_dir: &Path) -> Result<(), BelayError> {
                 SyncPreference::Sqlite => reconcile::SyncPreference::Sqlite,
             });
             let report = reconcile::synchronize(&repository, arguments.id.as_deref(), preference)?;
-            for outcome in &report.outcomes {
+            let unchanged = report
+                .outcomes
+                .iter()
+                .filter(|outcome| outcome.action == "unchanged")
+                .count();
+            for outcome in report
+                .outcomes
+                .iter()
+                .filter(|outcome| outcome.action != "unchanged")
+            {
                 println!("{}: {}", outcome.display_id, outcome.action);
             }
             for failure in &report.failures {
                 eprintln!("{}: {}", failure.subject, failure.message);
             }
             if report.failures.is_empty() {
-                println!("Sync completed: {} entries", report.outcomes.len());
+                println!(
+                    "Sync completed: {} entries ({} unchanged)",
+                    report.outcomes.len(),
+                    unchanged
+                );
                 Ok(())
             } else if report.failures.iter().any(|failure| failure.exit_code == 6) {
                 Err(BelayError::StorageSummary {

@@ -5,6 +5,40 @@ description: Use for Tier 2 or Tier 3 coding work, or whenever a task needs proj
 
 # belay-trace
 
+## Command reference
+
+Use these forms directly. Do not run `--help` to discover syntax.
+
+```sh
+belay context compile "<task>" --format agent --budget 4000   # once per task, at start
+belay context "<task>" --format agent --budget 2500           # fallback if compile is unavailable
+belay search "<query>"                                        # targeted follow-up discovery
+belay show <id>                                               # only when the full entry is needed
+belay add <goal|plan|decision|work|review|note> --title "<short-en-slug>"
+belay link <from-id> <to-id> --relation <rel>
+    # rel: fulfills | supports | verifies | reviews | implements |
+    #      references | supersedes | follows-up | refutes
+belay status <id> <status>
+belay goal lint <goal-id>
+belay verify record --kind <test|human-approval|...> --verdict <pass|fail> \
+  --source "<command-or-url>" --summary "<what passed>" --verifies <id>
+belay sync
+belay doctor        # when generated or active integration may be stale
+belay coverage      # inspect Goal coverage before release decisions
+```
+
+## Token discipline
+
+- Entry titles must be short English kebab-case, at most 5 words
+  (e.g. `t012-bigquery-dry-run`). The display ID embeds the title slug and is
+  repeated throughout later context; never use Japanese or long phrases in a
+  title. Put the descriptive detail in the entry body instead.
+- Write entry bodies as terse bullets. Delete scaffold sections that would
+  only say "None." Exception: the Intent Brief's seven sections must stay
+  non-empty; write `None identified` there.
+- Run `belay context compile` once at task start. For anything after that,
+  use `belay search`; do not re-compile at checkpoints.
+
 ## Classify the work
 
 - Tier 1 is a small, reversible change with clear scope. A separate Plan is optional.
@@ -14,12 +48,9 @@ description: Use for Tier 2 or Tier 3 coding work, or whenever a task needs proj
 
 ## Frame
 
-1. Run `belay context compile "<task>" --format agent --budget 4000` at task start.
-2. Use `belay search "<query>"` for targeted discovery.
-3. Use `belay show <id>` only when the full entry is needed.
-4. Avoid broad reads of `.belay/entries/` unless a command identifies a specific source path.
-5. Draft an Intent Brief in the Plan with non-empty Problem, Desired Outcome, Success Signals, Constraints, Non-goals, Assumptions, and Unknowns / Decisions Needed sections. Use `None identified` when there are no items.
-6. Separate facts, assumptions, unknowns, and human decisions. Ask before choices that materially change the outcome, affect security or data loss, create external commitments, or are irreversible. Explicitly record and proceed with small, reversible assumptions.
+1. Retrieve context per the command reference. Avoid broad reads of `.belay/entries/` unless a command identifies a specific source path.
+2. Draft an Intent Brief in the Plan with non-empty Problem, Desired Outcome, Success Signals, Constraints, Non-goals, Assumptions, and Unknowns / Decisions Needed sections.
+3. Separate facts, assumptions, unknowns, and human decisions. Ask before choices that materially change the outcome, affect security or data loss, create external commitments, or are irreversible. Explicitly record and proceed with small, reversible assumptions.
 
 ## Map
 
@@ -27,14 +58,14 @@ description: Use for Tier 2 or Tier 3 coding work, or whenever a task needs proj
 2. Add a Delivery Map to the Plan with columns: ID, Goal item, Outcome / Task, Actor, State, and Verification / Evidence.
 3. Map every Success Criterion to an observable outcome task and a verification task. Explain any task that has no Goal item.
 4. Give tasks stable, document-local IDs using `T-NNN`, starting at `T-001`. Never renumber or reuse an ID. Outside the defining document, use fully qualified references such as `GOAL-...#sc-001` and `PLN-...#t-001`.
-5. `implemented` means the change exists; `verified` requires fresh passing Evidence that actually checks the mapped outcome. A test definition is not passing Evidence.
+5. Task states are limited to `not-started`, `in-progress`, `blocked`, `implemented`, `verified`, and `dropped`. `implemented` means the change exists; `verified` requires fresh passing Evidence that actually checks the mapped outcome. A test definition is not passing Evidence.
 6. Keep dropped tasks visible and record the reason and approval source.
 
 ## Execute
 
 1. Use the Delivery Map Task ID as the active work unit and keep its state current.
 2. Add newly discovered tasks, assumptions, unknowns, constraints, and scope changes instead of silently absorbing them.
-3. Link Work and Evidence to the relevant Goal item using existing `fulfills` and `verifies` relations.
+3. Link Work and Evidence to the relevant Goal item using `fulfills` and `verifies` relations. Create a decision entry when implementation establishes a meaningful architectural, API, operational, or tradeoff decision; link a superseding decision to the old one with `supersedes` and set the old one's status to `superseded`.
 4. Reconcile after a meaningful task, a discovered requirement or risk, a scope or design change, before interruption or handoff, when the human asks for status, and before declaring completion.
 
 Use this fixed reconciliation report and make it agree with the Delivery Map:
@@ -71,95 +102,10 @@ Use a fresh context that did not implement the change to review the Intent Brief
 
 ## Update trace
 
-Use these recipes for routine operations. Replace placeholders with display IDs
-printed by Belay. Use `belay <command> --help` for options or status values not
-shown here; help is the complete syntax reference.
-
-### Orient without a broad scan
-
-```sh
-belay context compile "<task>" --format agent --budget 4000
-belay search "<targeted query>"
-belay show <entry-id>
-belay goal lint <goal-id>
-```
-
-If the installed Belay version has no `context compile`, fall back once to:
-
-```sh
-belay context "<task>" --format agent --budget 2500
-```
-
-### Create and connect lifecycle entries
-
-```sh
-belay add work --title "<title>" --body-file <path>
-belay link <work-id> <goal-id> --relation fulfills
-belay status <work-id> completed
-```
-
-Use the same `belay add` shape for a Decision or Review. Direction matters:
-the source entry is first. Typical links are Work `implements` Decision and
-Review `reviews` Work. Do not transition a Plan to `approved`, create an issue
-or pull request, start implementation, or merge without the applicable human
-approval.
-
-### Reconcile direct Markdown edits safely
-
-```sh
-belay sync
-belay show <entry-id>
-```
-
-If sync reports a two-sided conflict, inspect the SQLite view from `belay show`
-and the specific Markdown source path it reports. Only after choosing the
-intended source of truth, resolve that one entry and confirm convergence:
-
-```sh
-belay sync --prefer markdown <entry-id>
-belay sync
-belay show <entry-id>
-```
-
-Use `--prefer sqlite` instead only when SQLite is the confirmed source of truth.
-Never use a blanket preference for unresolved conflicts.
-
-### Record assurance and inspect coverage
-
-```sh
-belay verify record \
-  --kind test \
-  --verdict pass \
-  --source "<command-or-run-url>" \
-  --issuer "<actor>" \
-  --summary "<observable result>" \
-  --verifies <goal-id>#sc-001
-belay verify status <goal-id>#sc-001
-belay coverage
-belay doctor
-```
-
-Evidence must verify the outcome named by the criterion, not merely the
-existence of a test or code change.
-
-## Diagnose agent integration
-
-`belay doctor` reports deterministic repository state:
-
-- generated `present` means the canonical artifact exists; `missing` or
-  `stale` is repaired with `belay init`;
-- repository integration `inactive` means the optional active target is absent;
-- `active` means the active target exactly matches canonical generated content;
-- `stale` means an active or generated file differs and must be refreshed with
-  `belay init --update-agents` or `belay init --install-skill <target>`;
-- `malformed` currently means the marker-managed `AGENTS.md` block cannot be
-  parsed safely; repair the marker pair before refreshing it.
-
-Installed Skill content that differs from canonical content is `stale`, not
-`malformed`. Generated, installed, and repository-active states do not prove
-runtime recognition. Runtime recognition is a separate observation, and
-successful command execution is separate again. Report either as Unknown unless
-the agent surface provides direct evidence.
+1. Use `belay add goal` for intent, then link Work/Decision entries to it with `fulfills`. Run `belay goal lint <goal-id>` after drafting or materially editing a Goal.
+2. Record validation with `belay verify record` and inspect `belay coverage` before release decisions.
+3. Run `belay sync` after direct managed Markdown edits. Use terminal statuses (`abandoned`, `rejected`, `superseded`, `archived`) instead of deleting trace history.
+4. Entry-body templates live in `TRACE_GUIDE.md`; read it only when authoring an unfamiliar entry type.
 
 ## Conflict safety
 
@@ -167,5 +113,6 @@ Never overwrite an unresolved sync conflict. Inspect both sides and use
 `belay sync --prefer markdown <id>` or `belay sync --prefer sqlite <id>` only
 after the intended source of truth is known.
 
-Repository-specific policy belongs in the repository `AGENTS.md` or
-`CLAUDE.md`, as applicable, not in this generic skill.
+Repository-specific policy (human gates, review budgeting and round limits,
+version control, merge rules) belongs in the repository `AGENTS.md` or
+`CLAUDE.md`, not in this generic skill.
