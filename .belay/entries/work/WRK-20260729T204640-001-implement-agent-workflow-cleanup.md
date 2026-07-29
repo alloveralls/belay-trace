@@ -5,8 +5,8 @@ type: work
 title: implement-agent-workflow-cleanup
 status: completed
 created_at: 2026-07-29T20:46:40+09:00
-updated_at: 2026-07-29T21:06:50+09:00
-revision: 5
+updated_at: 2026-07-29T21:13:32+09:00
+revision: 6
 tags: []
 links:
 - relation: fulfills
@@ -38,3 +38,9 @@ metadata: {}
 
 - The PATH `belay` binary is older than the working-copy source; final doctor must use the rebuilt working-copy binary.
 - `belay init --install-skill` could not create an atomic temporary file under the macOS provenance/quarantine-tagged `.agents` directory; the tracked installed copies were reconciled to the generated canonical content after confirming a two-line-only diff.
+
+## Pull Request Delivery
+
+- Draft PR [#20](https://github.com/alloveralls/belay-trace/pull/20) targets `main` from `agent/guidance-refinement`.
+- Route design Decisions and Notes remain on the child Bookmark `agent/route-design-notes` and are excluded from the PR.
+- PR creation was explicitly approved by the project owner in the 2026-07-29 conversation.
