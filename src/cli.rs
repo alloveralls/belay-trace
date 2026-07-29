@@ -18,6 +18,7 @@ use crate::export;
 use crate::goal;
 use crate::reconcile;
 use crate::repository;
+use crate::route;
 use crate::search::{self, SearchRequest};
 use crate::store::{self, MutationOutcome};
 
@@ -368,6 +369,34 @@ Exit Status:
 Related Commands:
   `belay search`, `belay show`, and `belay doctor`."#;
 
+const ROUTE_AFTER_HELP: &str = r#"Behavior and Side Effects:
+  Manages one CLI-first decision-preparation run under ignored local state at
+  .belay/state/route/<run-id>/. Route Input and validation are deterministic.
+  Assessment and Proposal are produced by an external AI and remain advisory.
+  `preview` has no trace side effects. `apply` requires the exact preview hash
+  and materializes only operations selected by an accepted Human Response.
+
+Examples:
+  belay route start --seed GOAL-20260701T090000-001-reliable-sync
+  belay route template ROUTE-... assessment
+  belay route submit ROUTE-... assessment --file ./assessment.json
+  belay route submit ROUTE-... proposal --file ./proposal.json
+  belay route submit ROUTE-... response --file ./response.json
+  belay route preview ROUTE-...
+  belay route apply ROUTE-... --approve <preview-sha256>
+  belay route status ROUTE-...
+
+Exit Status:
+  0  Route operation completed
+  2  Invalid invocation
+  3  Repository not initialized
+  4  Schema, reference, authority, revision, or approval validation failed
+  5  Route Input is stale or managed trace state has drift
+  6  Filesystem, SQLite, or partial materialization failure
+
+Related Commands:
+  `belay context compile`, `belay show`, `belay sync`, and `belay doctor`."#;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "belay",
@@ -430,6 +459,12 @@ enum Command {
         after_help = CONTEXT_AFTER_HELP
     )]
     Context(ContextArgs),
+
+    #[command(
+        about = "Prepare and safely materialize a Route decision run",
+        after_help = ROUTE_AFTER_HELP
+    )]
+    Route(RouteArgs),
 
     #[command(
         about = "Review and improve Goal entries",
@@ -611,6 +646,72 @@ struct ContextArgs {
     /// Explicit seed entry for context compile.
     #[arg(long = "seed")]
     seeds: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct RouteArgs {
+    #[command(subcommand)]
+    command: RouteCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum RouteCommand {
+    #[command(about = "Create a deterministic Route Input from a primary Belay seed")]
+    Start(RouteStartArgs),
+    #[command(about = "Validate and store an external Route artifact")]
+    Submit(RouteSubmitArgs),
+    #[command(about = "Print a hash-bound JSON template for the next external artifact")]
+    Template(RouteTemplateArgs),
+    #[command(about = "Create a side-effect-free materialization preview")]
+    Preview(RouteRunArgs),
+    #[command(about = "Materialize the exact explicitly approved preview")]
+    Apply(RouteApplyArgs),
+    #[command(about = "Show the current Route run manifest")]
+    Status(RouteRunArgs),
+}
+
+#[derive(Debug, Args)]
+struct RouteStartArgs {
+    #[arg(long)]
+    seed: String,
+
+    #[arg(long = "include")]
+    includes: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct RouteSubmitArgs {
+    run_id: String,
+    #[arg(value_enum)]
+    kind: RouteSubmitKind,
+    #[arg(long, value_name = "PATH")]
+    file: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct RouteTemplateArgs {
+    run_id: String,
+    #[arg(value_enum)]
+    kind: RouteSubmitKind,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum RouteSubmitKind {
+    Assessment,
+    Proposal,
+    Response,
+}
+
+#[derive(Debug, Args)]
+struct RouteRunArgs {
+    run_id: String,
+}
+
+#[derive(Debug, Args)]
+struct RouteApplyArgs {
+    run_id: String,
+    #[arg(long, value_name = "PREVIEW_SHA256")]
+    approve: String,
 }
 
 #[derive(Debug, Args)]
@@ -925,6 +1026,106 @@ fn execute(cli: Cli, current_dir: &Path) -> Result<(), BelayError> {
             };
             print!("{}", bundle.text);
             Ok(())
+        }
+        Command::Route(arguments) => {
+            let repository = repository::discover(current_dir)?;
+            match arguments.command {
+                RouteCommand::Start(arguments) => {
+                    let outcome = route::start(&repository, &arguments.seed, &arguments.includes)?;
+                    println!("Created Route run {}", outcome.run_id);
+                    println!("Run path: {}", outcome.run_path.display());
+                    println!("Input: {}", outcome.input_path.display());
+                    println!("Input fingerprint: {}", outcome.fingerprint);
+                    Ok(())
+                }
+                RouteCommand::Submit(arguments) => {
+                    let kind = match arguments.kind {
+                        RouteSubmitKind::Assessment => route::SubmitKind::Assessment,
+                        RouteSubmitKind::Proposal => route::SubmitKind::Proposal,
+                        RouteSubmitKind::Response => route::SubmitKind::Response,
+                    };
+                    let outcome =
+                        route::submit(&repository, &arguments.run_id, kind, &arguments.file)?;
+                    println!(
+                        "Stored Route artifact revision {} at {}",
+                        outcome.revision,
+                        outcome.artifact_path.display()
+                    );
+                    println!("Artifact hash: {}", outcome.artifact_hash);
+                    Ok(())
+                }
+                RouteCommand::Template(arguments) => {
+                    let kind = match arguments.kind {
+                        RouteSubmitKind::Assessment => route::TemplateKind::Assessment,
+                        RouteSubmitKind::Proposal => route::TemplateKind::Proposal,
+                        RouteSubmitKind::Response => route::TemplateKind::Response,
+                    };
+                    let template = route::template(&repository, &arguments.run_id, kind)?;
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&template).map_err(|error| {
+                            BelayError::Validation {
+                                message: format!(
+                                    "Route template JSON serialization failed: {error}"
+                                ),
+                            }
+                        })?
+                    );
+                    Ok(())
+                }
+                RouteCommand::Preview(arguments) => {
+                    let outcome = route::preview(&repository, &arguments.run_id)?;
+                    println!(
+                        "Created Materialization Preview at {}",
+                        outcome.preview_path.display()
+                    );
+                    println!("Approve exact preview hash: {}", outcome.preview_hash);
+                    Ok(())
+                }
+                RouteCommand::Apply(arguments) => {
+                    let outcome = route::apply(&repository, &arguments.run_id, &arguments.approve)?;
+                    println!(
+                        "Recorded Reconciliation Result at {}",
+                        outcome.result_path.display()
+                    );
+                    for operation in &outcome.result.operations {
+                        println!(
+                            "{}: {:?}{}",
+                            operation.operation_id,
+                            operation.state,
+                            operation
+                                .target
+                                .as_ref()
+                                .map(|target| format!(" ({target})"))
+                                .unwrap_or_default()
+                        );
+                    }
+                    if outcome.has_failures() {
+                        Err(BelayError::StorageSummary {
+                            message:
+                                "Route materialization completed with failed operations; inspect the Reconciliation Result and retry safely"
+                                    .to_owned(),
+                        })
+                    } else {
+                        Ok(())
+                    }
+                }
+                RouteCommand::Status(arguments) => {
+                    let manifest = route::status(&repository, &arguments.run_id)?;
+                    print!(
+                        "{}",
+                        serde_json::to_string_pretty(&manifest).map_err(|error| {
+                            BelayError::Validation {
+                                message: format!(
+                                    "Route manifest JSON serialization failed: {error}"
+                                ),
+                            }
+                        })?
+                    );
+                    println!();
+                    Ok(())
+                }
+            }
         }
         Command::Goal(arguments) => {
             let repository = repository::discover(current_dir)?;

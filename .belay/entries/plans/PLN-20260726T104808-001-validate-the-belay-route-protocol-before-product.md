@@ -5,8 +5,8 @@ type: plan
 title: Implement the CLI-first Route MVP
 status: approved
 created_at: 2026-07-26T10:48:08+09:00
-updated_at: 2026-07-29T21:55:29+09:00
-revision: 7
+updated_at: 2026-07-30T06:17:27+09:00
+revision: 12
 tags: []
 links:
 - relation: references
@@ -111,7 +111,7 @@ metadata: {}
 
 ### 6. Preview, materialize, and reconcile
 
-- Materialization Previewは予定するentry、link、status、Evidence操作を副作用なしで列挙する。
+- Materialization Previewは予定するentry、link、status操作を副作用なしで列挙する。MVPのEvidenceはGoal Coverageとしてread-onlyで参照し、新規Evidence記録は既存の`belay verify` workflowに残す。
 - materialization直前にもstale検査を行い、明示承認されたoperationだけを適用する。
 - Reconciliation Resultは予定、成功、失敗、未適用、deferred、現在のBelay stateを照合し、部分失敗から安全に再開できる情報を残す。
 
@@ -119,14 +119,14 @@ metadata: {}
 
 | ID | Goal item | Outcome / Task | Actor | State | Verification / Evidence |
 | --- | --- | --- | --- | --- | --- |
-| T-001 | SC-001, SC-006 | Route run lifecycle、artifact ownership、authority state、failure stateをdurable designとして確定する | AI + Human | in-progress | Goal/Plan reviewと人間承認 |
-| T-002 | SC-001, SC-003, SC-004 | 6種類のversioned document schema、fingerprint、revision/hash、provenanceを実装する | AI | not-started | schema fixturesとunit tests |
-| T-003 | SC-002, SC-005 | primary seedからRoute Inputを生成し、`.belay/state/route/`へatomicに保存・resumeする | AI | not-started | deterministic snapshot、resume、regeneration tests |
-| T-004 | SC-001, SC-002, SC-007 | 外部AIのAssessment/Proposal取込とschema、reference、stale validationを実装する | AI | not-started | valid/invalid fixture tests |
-| T-005 | SC-003, SC-007 | Human Response取込とproposal bindingを実装し、未承認・mismatch・staleを拒否する | AI | not-started | authority negative tests |
-| T-006 | SC-003, SC-004 | 副作用のないMaterialization Previewと明示承認済みoperationのmaterializationを実装する | AI | not-started | preview/apply integration tests |
-| T-007 | SC-004, SC-005, SC-007 | Reconciliation Result、partial failure、idempotent resumeを実装する | AI | not-started | failure injectionとrecovery tests |
-| T-008 | SC-001..SC-007 | CLI end-to-end、docs、Skill guidance、独立review、Evidenceを完成させる | AI + independent reviewer | not-started | full validation、coverage、human acceptance |
+| T-001 | SC-001, SC-006 | Route run lifecycle、artifact ownership、authority state、failure stateをdurable designとして確定する | AI + Human | verified | approved Goal/Plan; `docs/design/route.md`; EVD-20260729T215529-001 |
+| T-002 | SC-001, SC-003, SC-004 | 6種類のversioned document schema、fingerprint、revision/hash、provenanceを実装する | AI | verified | `src/route.rs`; EVD-20260729T223748-001 |
+| T-003 | SC-002, SC-005 | primary seedからRoute Inputを生成し、`.belay/state/route/`へatomicに保存・resumeする | AI | verified | start/status/template CLI tests; EVD-20260729T223748-001 |
+| T-004 | SC-001, SC-002, SC-007 | 外部AIのAssessment/Proposal取込とschema、reference、stale validationを実装する | AI | verified | submit and stale tests; EVD-20260729T223748-001 |
+| T-005 | SC-003, SC-007 | Human Response取込とproposal bindingを実装し、未承認・mismatch・staleを拒否する | AI | verified | exact hash/authority tests; EVD-20260729T223748-001 |
+| T-006 | SC-003, SC-004 | 副作用のないMaterialization Previewと明示承認済みoperationのmaterializationを実装する | AI | verified | preview/apply CLI test; EVD-20260729T223748-001 |
+| T-007 | SC-004, SC-005, SC-007 | Reconciliation Result、partial failure、idempotent resumeを実装する | AI | verified | focused recovery tests; EVD-20260730T061625-001 |
+| T-008 | SC-001..SC-007 | CLI end-to-end、docs、Skill guidance、独立review、Evidenceを完成させる | AI + independent reviewer | verified | EVD-20260730T061625-001; REV-20260729T230114-001 approved |
 
 ## Human Gates
 
@@ -151,7 +151,7 @@ metadata: {}
 - ceremonial Human Response: exact fingerprintとproposal revisionへ結び付かない応答を承認として扱わない。
 - structured wrongness: Fact、Assumption、Hypothesis、Unknownを分離し、sourceなしFactをvalidatorで拒否する。
 - TOCTOU: preview後、materialization直前にfingerprintを再検査する。
-- partial write: operation IDとReconciliation Resultで再実行可能性を確保し、atomicity contractを設計時に確定する。
+- partial write: apply前にmanifestを`applying`へ遷移し、各mutationと同一SQLite transactionでoperation receiptを記録する。
 
 ## Review Requirements
 

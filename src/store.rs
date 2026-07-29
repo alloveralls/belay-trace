@@ -41,6 +41,21 @@ pub enum MutationOutcome {
     Unchanged,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct RouteMutationOutcome<T> {
+    pub value: T,
+    pub outcome: MutationOutcome,
+    pub replayed: bool,
+    pub post_revision: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RouteReceipt<'a> {
+    run_id: &'a str,
+    operation_id: &'a str,
+    preview_hash: &'a str,
+}
+
 #[cfg(test)]
 thread_local! {
     static FAIL_DIRECTORY_SYNC: Cell<bool> = const { Cell::new(false) };
@@ -52,6 +67,52 @@ pub fn create(
     title: String,
     body: String,
 ) -> Result<Entry, BelayError> {
+    create_with_metadata(repository, entry_type, title, body, BTreeMap::new())
+}
+
+pub(crate) fn create_with_metadata(
+    repository: &Repository,
+    entry_type: EntryType,
+    title: String,
+    body: String,
+    metadata: BTreeMap<String, MetadataValue>,
+) -> Result<Entry, BelayError> {
+    Ok(create_with_metadata_internal(repository, entry_type, title, body, metadata, None)?.value)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn route_create_with_metadata(
+    repository: &Repository,
+    run_id: &str,
+    operation_id: &str,
+    preview_hash: &str,
+    entry_type: EntryType,
+    title: String,
+    body: String,
+    metadata: BTreeMap<String, MetadataValue>,
+) -> Result<RouteMutationOutcome<Entry>, BelayError> {
+    create_with_metadata_internal(
+        repository,
+        entry_type,
+        title,
+        body,
+        metadata,
+        Some(RouteReceipt {
+            run_id,
+            operation_id,
+            preview_hash,
+        }),
+    )
+}
+
+fn create_with_metadata_internal(
+    repository: &Repository,
+    entry_type: EntryType,
+    title: String,
+    body: String,
+    metadata: BTreeMap<String, MetadataValue>,
+    receipt: Option<RouteReceipt<'_>>,
+) -> Result<RouteMutationOutcome<Entry>, BelayError> {
     if title.trim().is_empty() {
         return validation("entry title must not be empty");
     }
@@ -64,6 +125,61 @@ pub fn create(
     let database_path = repository.database_path();
     let mut connection = database::open(&database_path)?;
     let transaction = begin_immediate(&mut connection, &database_path)?;
+    if let Some(receipt) = receipt {
+        if let Some((outcome, target, post_revision)) =
+            load_route_receipt(&transaction, &database_path, receipt)?
+        {
+            let internal_id = resolve_internal_id(&transaction, &database_path, &target)?;
+            let entry = load_entry(&transaction, &database_path, internal_id)?;
+            transaction.commit()?;
+            return Ok(RouteMutationOutcome {
+                value: entry,
+                outcome,
+                replayed: true,
+                post_revision,
+            });
+        }
+        let matches = find_entries_with_metadata(&transaction, &database_path, &metadata)?;
+        if matches.len() > 1 {
+            return Err(BelayError::Conflict {
+                message: format!(
+                    "multiple entries claim Route operation {} for run {}",
+                    receipt.operation_id, receipt.run_id
+                ),
+            });
+        }
+        if let Some(entry) = matches.into_iter().next() {
+            if entry.entry_type != entry_type
+                || entry.title != title
+                || entry.body != body
+                || entry.status != entry_type.default_status()
+                || entry.metadata != metadata
+            {
+                return Err(BelayError::Conflict {
+                    message: format!(
+                        "entry {} claims Route operation {} but does not match the approved create operation",
+                        entry.display_id, receipt.operation_id
+                    ),
+                });
+            }
+            insert_route_receipt(
+                &transaction,
+                &database_path,
+                receipt,
+                MutationOutcome::Changed,
+                &entry.display_id,
+                entry.revision,
+                &timestamp,
+            )?;
+            transaction.commit()?;
+            return Ok(RouteMutationOutcome {
+                post_revision: entry.revision,
+                value: entry,
+                outcome: MutationOutcome::Changed,
+                replayed: true,
+            });
+        }
+    }
     let display_id = allocate_display_id(
         &transaction,
         &repository.entries_path(),
@@ -81,7 +197,7 @@ pub fn create(
         revision: 1,
         tags: Vec::new(),
         links: Vec::new(),
-        metadata: BTreeMap::new(),
+        metadata,
         body,
     }
     .normalized()?;
@@ -127,8 +243,25 @@ pub fn create(
         &timestamp,
     )?;
     write_new_file(repository, &destination, rendered.as_bytes())?;
+    if let Some(receipt) = receipt {
+        insert_route_receipt(
+            &transaction,
+            &database_path,
+            receipt,
+            MutationOutcome::Changed,
+            &entry.display_id,
+            entry.revision,
+            &timestamp,
+        )?;
+    }
+    let post_revision = entry.revision;
     transaction.commit()?;
-    Ok(entry)
+    Ok(RouteMutationOutcome {
+        value: entry,
+        outcome: MutationOutcome::Changed,
+        replayed: false,
+        post_revision,
+    })
 }
 
 pub fn show(repository: &Repository, display_id: &str) -> Result<ShownEntry, BelayError> {
@@ -144,6 +277,60 @@ pub fn link(
     to: &str,
     relation: LinkRelation,
 ) -> Result<MutationOutcome, BelayError> {
+    link_with_expected_revision(repository, from, to, relation, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn route_link_if_revision(
+    repository: &Repository,
+    run_id: &str,
+    operation_id: &str,
+    preview_hash: &str,
+    from: &str,
+    to: &str,
+    relation: LinkRelation,
+    expected_revision: u32,
+) -> Result<RouteMutationOutcome<String>, BelayError> {
+    link_with_expected_revision_and_receipt(
+        repository,
+        from,
+        to,
+        relation,
+        Some(expected_revision),
+        Some(RouteReceipt {
+            run_id,
+            operation_id,
+            preview_hash,
+        }),
+    )
+}
+
+fn link_with_expected_revision(
+    repository: &Repository,
+    from: &str,
+    to: &str,
+    relation: LinkRelation,
+    expected_revision: Option<u32>,
+) -> Result<MutationOutcome, BelayError> {
+    Ok(link_with_expected_revision_and_receipt(
+        repository,
+        from,
+        to,
+        relation,
+        expected_revision,
+        None,
+    )?
+    .outcome)
+}
+
+fn link_with_expected_revision_and_receipt(
+    repository: &Repository,
+    from: &str,
+    to: &str,
+    relation: LinkRelation,
+    expected_revision: Option<u32>,
+    receipt: Option<RouteReceipt<'_>>,
+) -> Result<RouteMutationOutcome<String>, BelayError> {
     parse_display_id(from)?;
     let to_reference = parse_entry_reference_id(to)?;
     if from == to_reference.display_id {
@@ -153,8 +340,28 @@ pub fn link(
     let database_path = repository.database_path();
     let mut connection = database::open(&database_path)?;
     let transaction = begin_immediate(&mut connection, &database_path)?;
+    if let Some(receipt) = receipt {
+        if let Some((outcome, target, post_revision)) =
+            load_route_receipt(&transaction, &database_path, receipt)?
+        {
+            transaction.commit()?;
+            return Ok(RouteMutationOutcome {
+                value: target,
+                outcome,
+                replayed: true,
+                post_revision,
+            });
+        }
+    }
     let from_id = resolve_internal_id(&transaction, &database_path, from)?;
     let to_id = resolve_internal_id(&transaction, &database_path, &to_reference.display_id)?;
+    ensure_expected_revision(
+        &transaction,
+        &database_path,
+        from_id,
+        from,
+        expected_revision,
+    )?;
     validate_reference_fragment(&transaction, &database_path, &to_reference)?;
     let expected_mirror_hash =
         ensure_no_mirror_drift(repository, &transaction, &database_path, from_id)?;
@@ -174,7 +381,26 @@ pub fn link(
         )
         .map_err(|source| BelayError::sqlite(&database_path, source))?;
     if inserted == 0 {
-        return Ok(MutationOutcome::Unchanged);
+        let target = format!("{from} {relation} {to}");
+        let post_revision = entry_revision(&transaction, &database_path, from_id)?;
+        if let Some(receipt) = receipt {
+            insert_route_receipt(
+                &transaction,
+                &database_path,
+                receipt,
+                MutationOutcome::Unchanged,
+                &target,
+                post_revision,
+                &now_string(),
+            )?;
+        }
+        transaction.commit()?;
+        return Ok(RouteMutationOutcome {
+            value: target,
+            outcome: MutationOutcome::Unchanged,
+            replayed: false,
+            post_revision,
+        });
     }
 
     update_mutated_entry(
@@ -185,8 +411,26 @@ pub fn link(
         None,
         &expected_mirror_hash,
     )?;
+    let post_revision = entry_revision(&transaction, &database_path, from_id)?;
+    let target = format!("{from} {relation} {to}");
+    if let Some(receipt) = receipt {
+        insert_route_receipt(
+            &transaction,
+            &database_path,
+            receipt,
+            MutationOutcome::Changed,
+            &target,
+            post_revision,
+            &now_string(),
+        )?;
+    }
     transaction.commit()?;
-    Ok(MutationOutcome::Changed)
+    Ok(RouteMutationOutcome {
+        value: target,
+        outcome: MutationOutcome::Changed,
+        replayed: false,
+        post_revision,
+    })
 }
 
 pub fn set_status(
@@ -194,11 +438,89 @@ pub fn set_status(
     display_id: &str,
     status: EntryStatus,
 ) -> Result<MutationOutcome, BelayError> {
+    set_status_with_expected_revision(repository, display_id, status, None)
+}
+
+#[cfg(test)]
+pub(crate) fn set_status_if_revision(
+    repository: &Repository,
+    display_id: &str,
+    status: EntryStatus,
+    expected_revision: u32,
+) -> Result<MutationOutcome, BelayError> {
+    set_status_with_expected_revision(repository, display_id, status, Some(expected_revision))
+}
+
+pub(crate) fn route_set_status_if_revision(
+    repository: &Repository,
+    run_id: &str,
+    operation_id: &str,
+    preview_hash: &str,
+    display_id: &str,
+    status: EntryStatus,
+    expected_revision: u32,
+) -> Result<RouteMutationOutcome<String>, BelayError> {
+    set_status_with_expected_revision_and_receipt(
+        repository,
+        display_id,
+        status,
+        Some(expected_revision),
+        Some(RouteReceipt {
+            run_id,
+            operation_id,
+            preview_hash,
+        }),
+    )
+}
+
+fn set_status_with_expected_revision(
+    repository: &Repository,
+    display_id: &str,
+    status: EntryStatus,
+    expected_revision: Option<u32>,
+) -> Result<MutationOutcome, BelayError> {
+    Ok(set_status_with_expected_revision_and_receipt(
+        repository,
+        display_id,
+        status,
+        expected_revision,
+        None,
+    )?
+    .outcome)
+}
+
+fn set_status_with_expected_revision_and_receipt(
+    repository: &Repository,
+    display_id: &str,
+    status: EntryStatus,
+    expected_revision: Option<u32>,
+    receipt: Option<RouteReceipt<'_>>,
+) -> Result<RouteMutationOutcome<String>, BelayError> {
     parse_display_id(display_id)?;
     let database_path = repository.database_path();
     let mut connection = database::open(&database_path)?;
     let transaction = begin_immediate(&mut connection, &database_path)?;
+    if let Some(receipt) = receipt {
+        if let Some((outcome, target, post_revision)) =
+            load_route_receipt(&transaction, &database_path, receipt)?
+        {
+            transaction.commit()?;
+            return Ok(RouteMutationOutcome {
+                value: target,
+                outcome,
+                replayed: true,
+                post_revision,
+            });
+        }
+    }
     let internal_id = resolve_internal_id(&transaction, &database_path, display_id)?;
+    ensure_expected_revision(
+        &transaction,
+        &database_path,
+        internal_id,
+        display_id,
+        expected_revision,
+    )?;
     let entry_type = transaction
         .query_row(
             "SELECT type FROM entries WHERE id = ?1",
@@ -223,7 +545,25 @@ pub fn set_status(
     let expected_mirror_hash =
         ensure_no_mirror_drift(repository, &transaction, &database_path, internal_id)?;
     if current == status {
-        return Ok(MutationOutcome::Unchanged);
+        let post_revision = entry_revision(&transaction, &database_path, internal_id)?;
+        if let Some(receipt) = receipt {
+            insert_route_receipt(
+                &transaction,
+                &database_path,
+                receipt,
+                MutationOutcome::Unchanged,
+                display_id,
+                post_revision,
+                &now_string(),
+            )?;
+        }
+        transaction.commit()?;
+        return Ok(RouteMutationOutcome {
+            value: display_id.to_owned(),
+            outcome: MutationOutcome::Unchanged,
+            replayed: false,
+            post_revision,
+        });
     }
 
     transaction
@@ -240,8 +580,183 @@ pub fn set_status(
         Some(status),
         &expected_mirror_hash,
     )?;
+    let post_revision = entry_revision(&transaction, &database_path, internal_id)?;
+    if let Some(receipt) = receipt {
+        insert_route_receipt(
+            &transaction,
+            &database_path,
+            receipt,
+            MutationOutcome::Changed,
+            display_id,
+            post_revision,
+            &now_string(),
+        )?;
+    }
     transaction.commit()?;
-    Ok(MutationOutcome::Changed)
+    Ok(RouteMutationOutcome {
+        value: display_id.to_owned(),
+        outcome: MutationOutcome::Changed,
+        replayed: false,
+        post_revision,
+    })
+}
+
+fn ensure_expected_revision(
+    connection: &Connection,
+    database_path: &Path,
+    internal_id: i64,
+    display_id: &str,
+    expected_revision: Option<u32>,
+) -> Result<(), BelayError> {
+    let Some(expected_revision) = expected_revision else {
+        return Ok(());
+    };
+    let actual_revision = connection
+        .query_row(
+            "SELECT revision FROM entries WHERE id = ?1",
+            [internal_id],
+            |row| row.get::<_, u32>(0),
+        )
+        .map_err(|source| BelayError::sqlite(database_path, source))?;
+    if actual_revision != expected_revision {
+        return Err(BelayError::Conflict {
+            message: format!(
+                "entry {display_id} revision changed: expected {expected_revision}, actual {actual_revision}"
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn load_route_receipt(
+    connection: &Connection,
+    database_path: &Path,
+    receipt: RouteReceipt<'_>,
+) -> Result<Option<(MutationOutcome, String, u32)>, BelayError> {
+    let row = connection
+        .query_row(
+            "
+            SELECT preview_hash, outcome, target, post_revision
+            FROM route_operation_receipts
+            WHERE run_id = ?1 AND operation_id = ?2
+            ",
+            params![receipt.run_id, receipt.operation_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, u32>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|source| BelayError::sqlite(database_path, source))?;
+    let Some((recorded_hash, outcome, target, post_revision)) = row else {
+        return Ok(None);
+    };
+    if recorded_hash != receipt.preview_hash {
+        return Err(BelayError::Conflict {
+            message: format!(
+                "Route operation {} for run {} is already bound to preview {}; requested {}",
+                receipt.operation_id, receipt.run_id, recorded_hash, receipt.preview_hash
+            ),
+        });
+    }
+    let outcome = match outcome.as_str() {
+        "changed" => MutationOutcome::Changed,
+        "unchanged" => MutationOutcome::Unchanged,
+        other => {
+            return validation(format!(
+                "Route operation receipt has unsupported outcome {other}"
+            ));
+        }
+    };
+    Ok(Some((outcome, target, post_revision)))
+}
+
+fn find_entries_with_metadata(
+    connection: &Connection,
+    database_path: &Path,
+    required: &BTreeMap<String, MetadataValue>,
+) -> Result<Vec<Entry>, BelayError> {
+    let mut statement = connection
+        .prepare("SELECT id, metadata_json FROM entries ORDER BY display_id")
+        .map_err(|source| BelayError::sqlite(database_path, source))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|source| BelayError::sqlite(database_path, source))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|source| BelayError::sqlite(database_path, source))?;
+    drop(statement);
+    let mut matches = Vec::new();
+    for (internal_id, metadata_json) in rows {
+        let metadata: BTreeMap<String, MetadataValue> = serde_json::from_str(&metadata_json)
+            .map_err(|source| BelayError::Validation {
+                message: format!("could not deserialize entry metadata: {source}"),
+            })?;
+        if required
+            .iter()
+            .all(|(key, value)| metadata.get(key) == Some(value))
+        {
+            matches.push(load_entry(connection, database_path, internal_id)?);
+        }
+    }
+    Ok(matches)
+}
+
+fn insert_route_receipt(
+    connection: &Connection,
+    database_path: &Path,
+    receipt: RouteReceipt<'_>,
+    outcome: MutationOutcome,
+    target: &str,
+    post_revision: u32,
+    recorded_at: &str,
+) -> Result<(), BelayError> {
+    let outcome = match outcome {
+        MutationOutcome::Changed => "changed",
+        MutationOutcome::Unchanged => "unchanged",
+    };
+    connection
+        .execute(
+            "
+            INSERT INTO route_operation_receipts(
+                run_id, operation_id, preview_hash, outcome, target, post_revision, recorded_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ",
+            params![
+                receipt.run_id,
+                receipt.operation_id,
+                receipt.preview_hash,
+                outcome,
+                target,
+                post_revision,
+                recorded_at
+            ],
+        )
+        .map_err(|source| BelayError::sqlite(database_path, source))?;
+    Ok(())
+}
+
+fn entry_revision(
+    connection: &Connection,
+    database_path: &Path,
+    internal_id: i64,
+) -> Result<u32, BelayError> {
+    connection
+        .query_row(
+            "SELECT revision FROM entries WHERE id = ?1",
+            [internal_id],
+            |row| row.get(0),
+        )
+        .map_err(|source| BelayError::sqlite(database_path, source))
+}
+
+fn now_string() -> String {
+    format_timestamp(&now())
 }
 
 fn update_mutated_entry(
@@ -788,6 +1303,59 @@ pub(crate) fn validate_reference_fragment(
             reference.display_id
         )),
     }
+}
+
+pub(crate) fn validate_entry_reference(
+    repository: &Repository,
+    reference: &str,
+) -> Result<(), BelayError> {
+    let reference = parse_entry_reference_id(reference)?;
+    let database_path = repository.database_path();
+    let connection = database::open_read_only(&database_path)?;
+    resolve_internal_id(&connection, &database_path, &reference.display_id)?;
+    validate_reference_fragment(&connection, &database_path, &reference)
+}
+
+pub(crate) fn route_receipt_targets(
+    repository: &Repository,
+    run_id: &str,
+    preview_hash: &str,
+) -> Result<BTreeMap<String, (String, MutationOutcome)>, BelayError> {
+    let database_path = repository.database_path();
+    let connection = database::open_read_only(&database_path)?;
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT operation_id, target, outcome
+            FROM route_operation_receipts
+            WHERE run_id = ?1 AND preview_hash = ?2
+            ORDER BY operation_id
+            ",
+        )
+        .map_err(|source| BelayError::sqlite(&database_path, source))?;
+    statement
+        .query_map(params![run_id, preview_hash], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|source| BelayError::sqlite(&database_path, source))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|source| BelayError::sqlite(&database_path, source))?
+        .into_iter()
+        .map(|(operation_id, target, outcome)| {
+            let outcome = match outcome.as_str() {
+                "changed" => Ok(MutationOutcome::Changed),
+                "unchanged" => Ok(MutationOutcome::Unchanged),
+                other => validation(format!(
+                    "Route operation receipt has unsupported outcome {other}"
+                )),
+            }?;
+            Ok((operation_id, (target, outcome)))
+        })
+        .collect()
 }
 
 pub(crate) fn serialize_metadata(
@@ -1549,5 +2117,82 @@ mod tests {
             fs::read_to_string(&mirror_path).expect("read restored mirror"),
             original
         );
+    }
+
+    #[test]
+    fn expected_revision_is_checked_inside_status_mutation() {
+        let temporary = tempdir().expect("create temp directory");
+        fs::create_dir(temporary.path().join(".git")).expect("create repository marker");
+        let repository = repository::initialize(temporary.path())
+            .expect("initialize repository")
+            .repository;
+        let created = create(
+            &repository,
+            EntryType::Goal,
+            "Revision guarded goal".to_owned(),
+            "## Summary\n\nGuard the mutation.".to_owned(),
+        )
+        .expect("create goal");
+        set_status(&repository, &created.display_id, EntryStatus::Active)
+            .expect("advance revision");
+
+        let error = set_status_if_revision(
+            &repository,
+            &created.display_id,
+            EntryStatus::Completed,
+            created.revision,
+        )
+        .expect_err("stale expected revision must fail");
+        assert_eq!(error.exit_code(), 5);
+        let shown = show(&repository, &created.display_id).expect("show guarded goal");
+        assert_eq!(shown.entry.status, EntryStatus::Active);
+        assert_eq!(shown.entry.revision, 2);
+    }
+
+    #[test]
+    fn route_create_receipt_replays_the_same_entry() {
+        let temporary = tempdir().expect("create temp directory");
+        fs::create_dir(temporary.path().join(".git")).expect("create repository marker");
+        let repository = repository::initialize(temporary.path())
+            .expect("initialize repository")
+            .repository;
+        let first = route_create_with_metadata(
+            &repository,
+            "route-001",
+            "op-001",
+            "preview-hash",
+            EntryType::Decision,
+            "Route decision".to_owned(),
+            "Durably journal this operation.".to_owned(),
+            BTreeMap::new(),
+        )
+        .expect("apply first Route create");
+        let replay = route_create_with_metadata(
+            &repository,
+            "route-001",
+            "op-001",
+            "preview-hash",
+            EntryType::Decision,
+            "Route decision".to_owned(),
+            "Durably journal this operation.".to_owned(),
+            BTreeMap::new(),
+        )
+        .expect("replay Route create");
+
+        assert!(!first.replayed);
+        assert!(replay.replayed);
+        assert_eq!(first.value.display_id, replay.value.display_id);
+        let connection =
+            Connection::open(repository.database_path()).expect("open Route receipt database");
+        let entry_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))
+            .expect("count entries");
+        let receipt_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM route_operation_receipts", [], |row| {
+                row.get(0)
+            })
+            .expect("count receipts");
+        assert_eq!(entry_count, 1);
+        assert_eq!(receipt_count, 1);
     }
 }
