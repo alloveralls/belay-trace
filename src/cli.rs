@@ -375,6 +375,8 @@ const ROUTE_AFTER_HELP: &str = r#"Behavior and Side Effects:
   Assessment and Proposal are produced by an external AI and remain advisory.
   `preview` has no trace side effects. `apply` requires the exact preview hash
   and materializes only operations selected by an accepted Human Response.
+  `pending` reports the one current, fresh Preview an agent may present for
+  conversational approval; it does not authenticate or interpret chat.
 
 Examples:
   belay route start --seed GOAL-20260701T090000-001-reliable-sync
@@ -383,6 +385,7 @@ Examples:
   belay route submit ROUTE-... proposal --file ./proposal.json
   belay route submit ROUTE-... response --file ./response.json
   belay route preview ROUTE-...
+  belay route pending ROUTE-...
   belay route apply ROUTE-... --approve <preview-sha256>
   belay route status ROUTE-...
 
@@ -664,6 +667,8 @@ enum RouteCommand {
     Template(RouteTemplateArgs),
     #[command(about = "Create a side-effect-free materialization preview")]
     Preview(RouteRunArgs),
+    #[command(about = "Show the one current fresh Preview for conversational approval")]
+    Pending(RouteRunArgs),
     #[command(about = "Materialize the exact explicitly approved preview")]
     Apply(RouteApplyArgs),
     #[command(about = "Show the current Route run manifest")]
@@ -1079,7 +1084,22 @@ fn execute(cli: Cli, current_dir: &Path) -> Result<(), BelayError> {
                         "Created Materialization Preview at {}",
                         outcome.preview_path.display()
                     );
+                    println!("Pending preview revision: {}", outcome.revision);
                     println!("Approve exact preview hash: {}", outcome.preview_hash);
+                    Ok(())
+                }
+                RouteCommand::Pending(arguments) => {
+                    let pending = route::pending(&repository, &arguments.run_id)?;
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&pending).map_err(|error| {
+                            BelayError::Validation {
+                                message: format!(
+                                    "Route pending Preview JSON serialization failed: {error}"
+                                ),
+                            }
+                        })?
+                    );
                     Ok(())
                 }
                 RouteCommand::Apply(arguments) => {

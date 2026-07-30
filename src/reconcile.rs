@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Local, SecondsFormat};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OpenFlags, params};
 #[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
 use rustix::fs::{AtFlags, Mode, OFlags, RenameFlags};
 
@@ -779,7 +779,23 @@ fn load_route_receipts_for_rebuild(
     if !database_path.exists() {
         return Ok(Vec::new());
     }
-    let connection = database::open_read_only(database_path)?;
+    // Rebuild must accept an older on-disk schema so it can replace it with the
+    // latest schema. `database::open_read_only` deliberately rejects those
+    // databases, so inspect the optional receipt table with a raw read-only
+    // connection instead, while retaining the standard SQLite configuration.
+    let connection = Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|source| BelayError::sqlite(database_path, source))?;
+    database::configure(&connection, database_path)?;
+    let has_receipts: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'route_operation_receipts')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|source| BelayError::sqlite(database_path, source))?;
+    if !has_receipts {
+        return Ok(Vec::new());
+    }
     let mut statement = connection
         .prepare(
             "

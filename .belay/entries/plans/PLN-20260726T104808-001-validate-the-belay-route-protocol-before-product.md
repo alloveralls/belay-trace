@@ -5,8 +5,8 @@ type: plan
 title: Implement the CLI-first Route MVP
 status: approved
 created_at: 2026-07-26T10:48:08+09:00
-updated_at: 2026-07-30T06:17:27+09:00
-revision: 12
+updated_at: 2026-07-30T20:42:51+09:00
+revision: 17
 tags: []
 links:
 - relation: references
@@ -127,6 +127,10 @@ metadata: {}
 | T-006 | SC-003, SC-004 | 副作用のないMaterialization Previewと明示承認済みoperationのmaterializationを実装する | AI | verified | preview/apply CLI test; EVD-20260729T223748-001 |
 | T-007 | SC-004, SC-005, SC-007 | Reconciliation Result、partial failure、idempotent resumeを実装する | AI | verified | focused recovery tests; EVD-20260730T061625-001 |
 | T-008 | SC-001..SC-007 | CLI end-to-end、docs、Skill guidance、独立review、Evidenceを完成させる | AI + independent reviewer | verified | EVD-20260730T061625-001; REV-20260729T230114-001 approved |
+| T-009 | SC-003, SC-004 | 保留Previewを一意に識別し、完全hashを内部検証したまま通常言語の承認を受けるCLI/contractを実装する | AI | verified | `route pending` binding contract; EVD-20260730T192220-001; REV-20260730T203035-001 |
+| T-010 | SC-003, SC-007 | agent Skillへ単一pending-preview、明示OK、失効・再提示の会話規約を追加する | AI | verified | generated/installed Skill一致; `belay doctor`; REV-20260730T203035-001 |
+| T-011 | SC-003, SC-004, SC-007 | 正常OK、曖昧OK、複数待機、Preview置換、stale Inputを含むend-to-end dogfoodを実施する | AI + Human | in-progress | automated replacement/freshness coverage passed; human操作性確認と明示受入れが未実施 |
+| T-012 | SC-004, SC-007 | pre-Route schema DBで`belay rebuild`がreceipt table不在を理由に失敗しないよう互換性を修正する | AI | verified | Copilot PR #21 review thread; EVD-20260730T203912-001; legacy-schema rebuild test |
 
 ## Human Gates
 

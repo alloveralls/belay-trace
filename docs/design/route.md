@@ -52,6 +52,7 @@ belay route submit <run-id> proposal --file proposal.json
 belay route template <run-id> response
 belay route submit <run-id> response --file response.json
 belay route preview <run-id>
+belay route pending <run-id>
 belay route apply <run-id> --approve <preview-hash>
 belay route status <run-id>
 ```
@@ -64,6 +65,19 @@ inputs makes the run stale before the first apply.
 `template` supplies current run IDs, revisions, and hashes. It is the preferred
 starting point for AI-generated JSON. A response template defaults to `defer`
 and cannot accidentally authorize a write.
+
+`pending` is the agent-facing read contract for conversational approval. It
+returns exactly one current Preview, including its run ID, Preview revision,
+internal hash, bindings, and selected operations. It rejects a stale Input and
+is unavailable once application begins or reconciliation completes. Generating
+another Preview replaces this pending binding; the older hash cannot be
+applied.
+
+An agent may present the returned operation summary and ask for explicit
+approval in ordinary language. It must retain only this single binding, discard
+it when the Preview or its dependencies change, and call `apply` with the
+internal hash only after a clear approval. Route does not authenticate,
+interpret, or store conversational provenance.
 
 ## Artifact authority
 
