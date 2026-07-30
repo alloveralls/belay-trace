@@ -299,7 +299,7 @@ pub fn verify_schema_health(connection: &Connection, path: &Path) -> Result<(), 
     Ok(())
 }
 
-fn configure(connection: &Connection, path: &Path) -> Result<(), BelayError> {
+pub(crate) fn configure(connection: &Connection, path: &Path) -> Result<(), BelayError> {
     connection
         .execute_batch("PRAGMA foreign_keys = ON;")
         .map_err(|source| BelayError::sqlite(path, source))?;

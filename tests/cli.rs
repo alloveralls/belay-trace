@@ -2800,6 +2800,59 @@ fn rebuild_restores_entries_links_search_and_sync_baselines() {
 }
 
 #[test]
+fn rebuild_upgrades_a_pre_route_schema_without_receipts() {
+    let temporary = initialize_repository();
+    let decision = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Legacy rebuild",
+                "--body",
+                "A schema v3 database remains rebuildable.",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add decision"),
+    );
+    let database = temporary.path().join(".belay/state/belay.sqlite");
+    let connection = Connection::open(&database).expect("open database");
+    connection
+        .execute_batch(
+            "
+            DROP INDEX idx_route_operation_receipts_preview;
+            DROP TABLE route_operation_receipts;
+            DELETE FROM schema_migrations WHERE version = 4;
+            ",
+        )
+        .expect("downgrade to schema v3");
+    drop(connection);
+
+    let rebuilt = belay()
+        .arg("rebuild")
+        .current_dir(temporary.path())
+        .output()
+        .expect("rebuild legacy database");
+    assert!(rebuilt.status.success(), "{rebuilt:?}");
+    let rebuilt_database = Connection::open(&database).expect("open rebuilt database");
+    let version: i64 = rebuilt_database
+        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+            row.get(0)
+        })
+        .expect("read rebuilt schema version");
+    assert_eq!(version, 4);
+    let restored: String = rebuilt_database
+        .query_row(
+            "SELECT title FROM entries WHERE display_id = ?1",
+            [&decision],
+            |row| row.get(0),
+        )
+        .expect("read rebuilt entry");
+    assert_eq!(restored, "Legacy rebuild");
+}
+
+#[test]
 fn rebuild_validation_failure_preserves_existing_database() {
     let temporary = initialize_repository();
     let decision = created_id(
@@ -3882,6 +3935,12 @@ fn route_cli_materializes_only_the_exact_accepted_preview_and_retries_idempotent
         .output()
         .expect("submit Human Response");
     assert!(submitted.status.success(), "{submitted:?}");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(run_path.join("manifest.json")).expect("read manifest"))
+            .expect("parse manifest");
+    let response_hash = manifest["response"]["sha256"]
+        .as_str()
+        .expect("response hash");
 
     let previewed = belay()
         .args(["route", "preview", &run_id])
@@ -3895,6 +3954,58 @@ fn route_cli_materializes_only_the_exact_accepted_preview_and_retries_idempotent
         .find_map(|line| line.strip_prefix("Approve exact preview hash: "))
         .expect("preview hash");
 
+    let pending = belay()
+        .args(["route", "pending", &run_id])
+        .current_dir(temporary.path())
+        .output()
+        .expect("show pending Preview");
+    assert!(pending.status.success(), "{pending:?}");
+    let pending: serde_json::Value =
+        serde_json::from_slice(&pending.stdout).expect("parse pending Preview");
+    assert_eq!(pending["run_id"], run_id);
+    assert_eq!(pending["preview_revision"], 1);
+    assert_eq!(pending["preview_hash"], preview_hash);
+    assert_eq!(pending["input_fingerprint"], fingerprint);
+    assert_eq!(pending["proposal_revision"], 1);
+    assert_eq!(pending["proposal_hash"], proposal_hash);
+    assert_eq!(pending["response_revision"], 1);
+    assert_eq!(pending["response_hash"], response_hash);
+    assert_eq!(pending["operations"].as_array().map(Vec::len), Some(4));
+
+    let replacement = belay()
+        .args(["route", "preview", &run_id])
+        .current_dir(temporary.path())
+        .output()
+        .expect("replace pending Preview");
+    assert!(replacement.status.success(), "{replacement:?}");
+    let replacement_stdout = String::from_utf8(replacement.stdout).expect("replacement stdout");
+    let replacement_hash = replacement_stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("Approve exact preview hash: "))
+        .expect("replacement preview hash");
+    assert_ne!(replacement_hash, preview_hash);
+    let pending = belay()
+        .args(["route", "pending", &run_id])
+        .current_dir(temporary.path())
+        .output()
+        .expect("show replacement pending Preview");
+    assert!(pending.status.success(), "{pending:?}");
+    let pending: serde_json::Value =
+        serde_json::from_slice(&pending.stdout).expect("parse replacement pending Preview");
+    assert_eq!(pending["preview_revision"], 2);
+    assert_eq!(pending["preview_hash"], replacement_hash);
+    assert_eq!(pending["input_fingerprint"], fingerprint);
+    assert_eq!(pending["proposal_hash"], proposal_hash);
+    assert_eq!(pending["response_hash"], response_hash);
+    assert_eq!(pending["operations"].as_array().map(Vec::len), Some(4));
+
+    let replaced = belay()
+        .args(["route", "apply", &run_id, "--approve", preview_hash])
+        .current_dir(temporary.path())
+        .output()
+        .expect("reject replaced pending Preview");
+    assert_eq!(replaced.status.code(), Some(4));
+
     let rejected = belay()
         .args(["route", "apply", &run_id, "--approve", "wrong-hash"])
         .current_dir(temporary.path())
@@ -3903,7 +4014,7 @@ fn route_cli_materializes_only_the_exact_accepted_preview_and_retries_idempotent
     assert_eq!(rejected.status.code(), Some(4));
 
     let applied = belay()
-        .args(["route", "apply", &run_id, "--approve", preview_hash])
+        .args(["route", "apply", &run_id, "--approve", replacement_hash])
         .current_dir(temporary.path())
         .output()
         .expect("apply accepted preview");
@@ -3940,7 +4051,7 @@ fn route_cli_materializes_only_the_exact_accepted_preview_and_retries_idempotent
     )
     .expect("restore applying manifest");
     let recovered = belay()
-        .args(["route", "apply", &run_id, "--approve", preview_hash])
+        .args(["route", "apply", &run_id, "--approve", replacement_hash])
         .current_dir(temporary.path())
         .output()
         .expect("resume after Reconciliation persistence crash");
@@ -3962,7 +4073,7 @@ fn route_cli_materializes_only_the_exact_accepted_preview_and_retries_idempotent
     assert!(rebuilt.status.success(), "{rebuilt:?}");
 
     let retried = belay()
-        .args(["route", "apply", &run_id, "--approve", preview_hash])
+        .args(["route", "apply", &run_id, "--approve", replacement_hash])
         .current_dir(temporary.path())
         .output()
         .expect("retry accepted preview");
@@ -4002,7 +4113,7 @@ fn route_cli_materializes_only_the_exact_accepted_preview_and_retries_idempotent
         "{externally_changed:?}"
     );
     let conflicted = belay()
-        .args(["route", "apply", &run_id, "--approve", preview_hash])
+        .args(["route", "apply", &run_id, "--approve", replacement_hash])
         .current_dir(temporary.path())
         .output()
         .expect("record receipt postcondition conflict");
@@ -4020,7 +4131,7 @@ fn route_cli_materializes_only_the_exact_accepted_preview_and_retries_idempotent
     );
 
     let conflicted_again = belay()
-        .args(["route", "apply", &run_id, "--approve", preview_hash])
+        .args(["route", "apply", &run_id, "--approve", replacement_hash])
         .current_dir(temporary.path())
         .output()
         .expect("retry receipt postcondition conflict");

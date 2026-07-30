@@ -306,6 +306,20 @@ pub struct SubmitOutcome {
 pub struct PreviewOutcome {
     pub preview_path: PathBuf,
     pub preview_hash: String,
+    pub revision: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingPreview {
+    pub run_id: String,
+    pub preview_revision: u32,
+    pub preview_hash: String,
+    pub input_fingerprint: String,
+    pub proposal_revision: u32,
+    pub proposal_hash: String,
+    pub response_revision: u32,
+    pub response_hash: String,
+    pub operations: Vec<ProposedOperation>,
 }
 
 #[derive(Debug)]
@@ -548,6 +562,40 @@ pub fn preview(repository: &Repository, run_id: &str) -> Result<PreviewOutcome, 
     Ok(PreviewOutcome {
         preview_path: path,
         preview_hash: artifact.preview_hash,
+        revision: artifact.revision,
+    })
+}
+
+/// Returns the one Preview an agent may present for conversational approval.
+/// It verifies freshness but does not interpret a conversation or authorize a write.
+pub fn pending(repository: &Repository, run_id: &str) -> Result<PendingPreview, BelayError> {
+    let run_path = run_directory(repository, run_id)?;
+    let manifest = read_manifest(&run_path)?;
+    require_phase(
+        &manifest,
+        &[RoutePhase::Previewed],
+        "inspect a pending Materialization Preview",
+    )?;
+    verify_input_current(repository, &run_path, &manifest)?;
+    let preview_ref = manifest
+        .preview
+        .as_ref()
+        .ok_or_else(|| validation_error("Route run has no Materialization Preview"))?;
+    let preview: MaterializationPreview =
+        read_artifact(&run_path, preview_ref, "Materialization Preview")?;
+    if preview_hash(&preview)? != preview.preview_hash {
+        return validation("Materialization Preview content does not match its preview hash");
+    }
+    Ok(PendingPreview {
+        run_id: preview.run_id,
+        preview_revision: preview.revision,
+        preview_hash: preview.preview_hash,
+        input_fingerprint: preview.input_fingerprint,
+        proposal_revision: preview.proposal_revision,
+        proposal_hash: preview.proposal_hash,
+        response_revision: preview.response_revision,
+        response_hash: preview.response_hash,
+        operations: preview.operations,
     })
 }
 
