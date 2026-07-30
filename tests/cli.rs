@@ -45,6 +45,7 @@ fn top_level_help_describes_commands_workflow_and_exit_categories() {
         "search",
         "browse",
         "context",
+        "route",
         "doctor",
         "rebuild",
         "export",
@@ -56,8 +57,8 @@ fn top_level_help_describes_commands_workflow_and_exit_categories() {
 #[test]
 fn every_command_help_has_the_required_structure() {
     for command in [
-        "init", "add", "link", "status", "show", "search", "browse", "context", "sync", "rebuild",
-        "export", "doctor",
+        "init", "add", "link", "status", "show", "search", "browse", "context", "route", "sync",
+        "rebuild", "export", "doctor",
     ] {
         let output = belay()
             .args([command, "--help"])
@@ -1617,7 +1618,7 @@ fn search_rejects_non_contiguous_migration_history() {
         String::from_utf8(output.stderr)
             .expect("search stderr")
             .contains(
-                "migration history is inconsistent: version 2 is missing while version 3 is recorded"
+        "migration history is inconsistent: version 2 is missing while version 4 is recorded"
             )
     );
 
@@ -1634,7 +1635,7 @@ fn search_rejects_non_contiguous_migration_history() {
             |row| row.get(0),
         )
         .expect("read FTS schema");
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
     assert!(!fts_sql.contains("chunk_ordinal UNINDEXED"));
     assert!(!decision.is_empty());
 }
@@ -1703,7 +1704,7 @@ fn concurrent_searches_reject_non_contiguous_migration_history() {
             String::from_utf8(output.stderr)
                 .expect("search stderr")
                 .contains(
-                    "migration history is inconsistent: version 2 is missing while version 3 is recorded"
+            "migration history is inconsistent: version 2 is missing while version 4 is recorded"
                 )
         );
     }
@@ -3704,4 +3705,421 @@ fn evidence_status_orders_offset_timestamps_by_instant() {
         .find("older-offset-evidence")
         .expect("older evidence");
     assert!(newer < older, "{stdout}");
+}
+
+#[test]
+fn route_cli_materializes_only_the_exact_accepted_preview_and_retries_idempotently() {
+    let temporary = initialize_repository();
+    let goal = created_id(
+        &belay()
+            .args(["add", "goal", "--title", "Route seed"])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add Route seed"),
+    );
+
+    let started = belay()
+        .args(["route", "start", "--seed", &goal])
+        .current_dir(temporary.path())
+        .output()
+        .expect("start Route run");
+    assert!(started.status.success(), "{started:?}");
+    let stdout = String::from_utf8(started.stdout).expect("start stdout");
+    let run_id = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("Created Route run "))
+        .expect("Route run ID")
+        .to_owned();
+    let run_path = temporary.path().join(".belay/state/route").join(&run_id);
+    let input: serde_json::Value = serde_json::from_slice(
+        &fs::read(run_path.join("input-001.json")).expect("read Route Input"),
+    )
+    .expect("parse Route Input");
+    let fingerprint = input["fingerprint"].as_str().expect("input fingerprint");
+    let assessment_template = belay()
+        .args(["route", "template", &run_id, "assessment"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("render Assessment template");
+    assert!(assessment_template.status.success());
+    let assessment_template: serde_json::Value =
+        serde_json::from_slice(&assessment_template.stdout).expect("parse Assessment template");
+    assert_eq!(assessment_template["input_fingerprint"], fingerprint);
+
+    let assessment_path = temporary.path().join("assessment.json");
+    fs::write(
+        &assessment_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "artifact_type": "route-assessment",
+            "run_id": run_id,
+            "revision": 1,
+            "input_fingerprint": fingerprint,
+            "outcome": "continue",
+            "items": [{
+                "id": "fact-001",
+                "classification": "fact",
+                "summary": "The seed Goal exists.",
+                "references": [goal]
+            }],
+            "limitations": []
+        }))
+        .expect("serialize Assessment"),
+    )
+    .expect("write Assessment");
+    let submitted = belay()
+        .args([
+            "route",
+            "submit",
+            &run_id,
+            "assessment",
+            "--file",
+            assessment_path.to_str().expect("assessment path"),
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("submit Assessment");
+    assert!(submitted.status.success(), "{submitted:?}");
+
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(run_path.join("manifest.json")).expect("read manifest"))
+            .expect("parse manifest");
+    let assessment_hash = manifest["assessment"]["sha256"]
+        .as_str()
+        .expect("assessment hash");
+    let proposal_path = temporary.path().join("proposal.json");
+    fs::write(
+        &proposal_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "artifact_type": "route-proposal",
+            "run_id": run_id,
+            "revision": 1,
+            "input_fingerprint": fingerprint,
+            "assessment_hash": assessment_hash,
+            "outcome": "continue",
+            "summary": "Record the accepted Route decision.",
+            "operations": [{
+                "kind": "create-entry",
+                "operation_id": "op-001",
+                "alias": "decision",
+                "type": "decision",
+                "title": "Route-created decision",
+                "body": "Created from an explicitly accepted Route preview."
+            }, {
+                "kind": "link",
+                "operation_id": "op-002",
+                "from": "$decision",
+                "to": goal,
+                "relation": "supports"
+            }, {
+                "kind": "link",
+                "operation_id": "op-003",
+                "from": "$decision",
+                "to": goal,
+                "relation": "supports"
+            }, {
+                "kind": "set-status",
+                "operation_id": "op-004",
+                "target": goal,
+                "status": "active"
+            }]
+        }))
+        .expect("serialize Proposal"),
+    )
+    .expect("write Proposal");
+    let submitted = belay()
+        .args([
+            "route",
+            "submit",
+            &run_id,
+            "proposal",
+            "--file",
+            proposal_path.to_str().expect("proposal path"),
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("submit Proposal");
+    assert!(submitted.status.success(), "{submitted:?}");
+
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(run_path.join("manifest.json")).expect("read manifest"))
+            .expect("parse manifest");
+    let proposal_hash = manifest["proposal"]["sha256"]
+        .as_str()
+        .expect("proposal hash");
+    let response_path = temporary.path().join("response.json");
+    fs::write(
+        &response_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "artifact_type": "human-response",
+            "run_id": run_id,
+            "revision": 1,
+            "input_fingerprint": fingerprint,
+            "proposal_revision": 1,
+            "proposal_hash": proposal_hash,
+            "action": "accept",
+            "selected_operation_ids": ["op-001", "op-002", "op-003", "op-004"],
+            "reason": "Approved in the test.",
+            "requested_changes": [],
+            "issuer": "test:user",
+            "responded_at": "2026-07-29T21:00:00+09:00"
+        }))
+        .expect("serialize Human Response"),
+    )
+    .expect("write Human Response");
+    let submitted = belay()
+        .args([
+            "route",
+            "submit",
+            &run_id,
+            "response",
+            "--file",
+            response_path.to_str().expect("response path"),
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("submit Human Response");
+    assert!(submitted.status.success(), "{submitted:?}");
+
+    let previewed = belay()
+        .args(["route", "preview", &run_id])
+        .current_dir(temporary.path())
+        .output()
+        .expect("preview Route materialization");
+    assert!(previewed.status.success(), "{previewed:?}");
+    let preview_stdout = String::from_utf8(previewed.stdout).expect("preview stdout");
+    let preview_hash = preview_stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("Approve exact preview hash: "))
+        .expect("preview hash");
+
+    let rejected = belay()
+        .args(["route", "apply", &run_id, "--approve", "wrong-hash"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("reject wrong preview hash");
+    assert_eq!(rejected.status.code(), Some(4));
+
+    let applied = belay()
+        .args(["route", "apply", &run_id, "--approve", preview_hash])
+        .current_dir(temporary.path())
+        .output()
+        .expect("apply accepted preview");
+    assert!(applied.status.success(), "{applied:?}");
+    let first_result: serde_json::Value = serde_json::from_slice(
+        &fs::read(run_path.join("reconciliation-001.json")).expect("read reconciliation"),
+    )
+    .expect("parse reconciliation");
+    assert_eq!(first_result["operations"][0]["state"], "applied");
+    assert_eq!(first_result["operations"][1]["state"], "applied");
+    assert_eq!(first_result["operations"][2]["state"], "unchanged");
+    assert_eq!(first_result["operations"][3]["state"], "applied");
+    let created_id = first_result["aliases"]["decision"]
+        .as_str()
+        .expect("created alias");
+    assert!(
+        temporary
+            .path()
+            .join(".belay/entries/decisions")
+            .join(format!("{created_id}.md"))
+            .is_file()
+    );
+
+    fs::remove_file(run_path.join("reconciliation-001.json"))
+        .expect("simulate crash before Reconciliation persistence");
+    let mut applying_manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(run_path.join("manifest.json")).expect("read manifest"))
+            .expect("parse manifest");
+    applying_manifest["phase"] = serde_json::json!("applying");
+    applying_manifest["reconciliation"] = serde_json::Value::Null;
+    fs::write(
+        run_path.join("manifest.json"),
+        serde_json::to_vec_pretty(&applying_manifest).expect("serialize applying manifest"),
+    )
+    .expect("restore applying manifest");
+    let recovered = belay()
+        .args(["route", "apply", &run_id, "--approve", preview_hash])
+        .current_dir(temporary.path())
+        .output()
+        .expect("resume after Reconciliation persistence crash");
+    assert!(recovered.status.success(), "{recovered:?}");
+    let recovered_result: serde_json::Value = serde_json::from_slice(
+        &fs::read(run_path.join("reconciliation-001.json")).expect("read recovered reconciliation"),
+    )
+    .expect("parse recovered reconciliation");
+    assert_eq!(recovered_result["operations"][0]["state"], "unchanged");
+    assert_eq!(recovered_result["operations"][1]["state"], "unchanged");
+    assert_eq!(recovered_result["operations"][2]["state"], "unchanged");
+    assert_eq!(recovered_result["operations"][3]["state"], "unchanged");
+
+    let rebuilt = belay()
+        .arg("rebuild")
+        .current_dir(temporary.path())
+        .output()
+        .expect("rebuild while preserving Route receipts");
+    assert!(rebuilt.status.success(), "{rebuilt:?}");
+
+    let retried = belay()
+        .args(["route", "apply", &run_id, "--approve", preview_hash])
+        .current_dir(temporary.path())
+        .output()
+        .expect("retry accepted preview");
+    assert!(retried.status.success(), "{retried:?}");
+    let second_result: serde_json::Value = serde_json::from_slice(
+        &fs::read(run_path.join("reconciliation-002.json")).expect("read retry reconciliation"),
+    )
+    .expect("parse retry reconciliation");
+    assert_eq!(second_result["operations"][0]["state"], "unchanged");
+    assert_eq!(second_result["operations"][1]["state"], "unchanged");
+    assert_eq!(second_result["operations"][2]["state"], "unchanged");
+    assert_eq!(second_result["operations"][3]["state"], "unchanged");
+    assert_eq!(second_result["aliases"]["decision"], created_id);
+
+    fs::remove_file(run_path.join("reconciliation-002.json"))
+        .expect("simulate a second crash before Reconciliation persistence");
+    fs::remove_file(run_path.join("reconciliation-001.json"))
+        .expect("remove earlier recovered Reconciliation");
+    let mut applying_manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(run_path.join("manifest.json")).expect("read manifest"))
+            .expect("parse manifest");
+    applying_manifest["phase"] = serde_json::json!("applying");
+    applying_manifest["reconciliation"] = serde_json::Value::Null;
+    fs::write(
+        run_path.join("manifest.json"),
+        serde_json::to_vec_pretty(&applying_manifest).expect("serialize applying manifest"),
+    )
+    .expect("restore applying manifest before conflict");
+
+    let externally_changed = belay()
+        .args(["status", &goal, "completed"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("change a receipt target after apply");
+    assert!(
+        externally_changed.status.success(),
+        "{externally_changed:?}"
+    );
+    let conflicted = belay()
+        .args(["route", "apply", &run_id, "--approve", preview_hash])
+        .current_dir(temporary.path())
+        .output()
+        .expect("record receipt postcondition conflict");
+    assert_eq!(conflicted.status.code(), Some(6));
+    let conflict_result: serde_json::Value = serde_json::from_slice(
+        &fs::read(run_path.join("reconciliation-001.json")).expect("read conflict reconciliation"),
+    )
+    .expect("parse conflict reconciliation");
+    assert!(
+        conflict_result["operations"]
+            .as_array()
+            .expect("conflict operations")
+            .iter()
+            .any(|operation| operation["state"] == "failed")
+    );
+
+    let conflicted_again = belay()
+        .args(["route", "apply", &run_id, "--approve", preview_hash])
+        .current_dir(temporary.path())
+        .output()
+        .expect("retry receipt postcondition conflict");
+    assert_eq!(conflicted_again.status.code(), Some(6));
+    let goal_after_retry = belay()
+        .args(["show", &goal])
+        .current_dir(temporary.path())
+        .output()
+        .expect("show goal after conflict retry");
+    assert!(goal_after_retry.status.success(), "{goal_after_retry:?}");
+    let goal_after_retry =
+        String::from_utf8(goal_after_retry.stdout).expect("parse goal after retry");
+    assert!(goal_after_retry.contains("Status: completed"));
+}
+
+#[test]
+fn route_commands_reject_a_stale_input() {
+    let temporary = initialize_repository();
+    let goal = created_id(
+        &belay()
+            .args(["add", "goal", "--title", "Stale Route seed"])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add Route seed"),
+    );
+    let started = belay()
+        .args(["route", "start", "--seed", &goal])
+        .current_dir(temporary.path())
+        .output()
+        .expect("start Route run");
+    assert!(started.status.success(), "{started:?}");
+
+    let changed = belay()
+        .args(["status", &goal, "active"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("change seed after Route start");
+    assert!(changed.status.success(), "{changed:?}");
+
+    let status = belay()
+        .args(["route", "status", "ROUTE-invalid/path"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("reject unsafe Route ID");
+    assert_eq!(status.status.code(), Some(4));
+
+    let stdout = String::from_utf8(started.stdout).expect("start stdout");
+    let run_id = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("Created Route run "))
+        .expect("Route run ID");
+    let status = belay()
+        .args(["route", "status", run_id])
+        .current_dir(temporary.path())
+        .output()
+        .expect("show stale run manifest");
+    assert!(status.status.success());
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&status.stdout).expect("parse run status");
+    assert_eq!(manifest["phase"], "started");
+
+    let missing = belay()
+        .args(["route", "template", run_id, "assessment"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("reject stale Route before template");
+    assert_eq!(missing.status.code(), Some(5));
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("Route Input is stale"));
+}
+
+#[cfg(unix)]
+#[test]
+fn route_rejects_a_symlinked_state_root_without_external_write() {
+    let temporary = initialize_repository();
+    let goal = created_id(
+        &belay()
+            .args(["add", "goal", "--title", "Safe Route root"])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add Route seed"),
+    );
+    let external = temporary.path().join("external-route-state");
+    fs::create_dir(&external).expect("create external directory");
+    std::os::unix::fs::symlink(&external, temporary.path().join(".belay/state/route"))
+        .expect("symlink Route root");
+
+    let started = belay()
+        .args(["route", "start", "--seed", &goal])
+        .current_dir(temporary.path())
+        .output()
+        .expect("reject symlinked Route root");
+    assert_eq!(started.status.code(), Some(4));
+    assert!(
+        String::from_utf8_lossy(&started.stderr).contains("must be a directory and not a symlink")
+    );
+    assert_eq!(
+        fs::read_dir(&external)
+            .expect("read external directory")
+            .count(),
+        0
+    );
 }

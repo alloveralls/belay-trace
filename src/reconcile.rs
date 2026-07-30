@@ -716,6 +716,7 @@ pub fn rebuild(repository: &Repository) -> Result<usize, BelayError> {
         })?;
     let temporary = unique_sibling(&database_path, "rebuild");
     let backup = unique_sibling(&database_path, "backup");
+    let route_receipts = load_route_receipts_for_rebuild(&database_path)?;
 
     let build_result = (|| {
         database::initialize(&temporary)?;
@@ -740,6 +741,21 @@ pub fn rebuild(repository: &Repository) -> Result<usize, BelayError> {
             )?;
         }
         crate::evidence::rebuild_into(repository, &transaction, &temporary)?;
+        for receipt in &route_receipts {
+            transaction
+                .execute(
+                    "
+                    INSERT INTO route_operation_receipts(
+                        run_id, operation_id, preview_hash, outcome, target,
+                        post_revision, recorded_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                    ",
+                    params![
+                        receipt.0, receipt.1, receipt.2, receipt.3, receipt.4, receipt.5, receipt.6
+                    ],
+                )
+                .map_err(|source| BelayError::sqlite(&temporary, source))?;
+        }
         transaction.commit()?;
         drop(connection);
         Ok::<(), BelayError>(())
@@ -753,6 +769,42 @@ pub fn rebuild(repository: &Repository) -> Result<usize, BelayError> {
         return Err(error);
     }
     Ok(inventory.entries.len())
+}
+
+type RouteReceiptRecord = (String, String, String, String, String, u32, String);
+
+fn load_route_receipts_for_rebuild(
+    database_path: &Path,
+) -> Result<Vec<RouteReceiptRecord>, BelayError> {
+    if !database_path.exists() {
+        return Ok(Vec::new());
+    }
+    let connection = database::open_read_only(database_path)?;
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT run_id, operation_id, preview_hash, outcome, target,
+                   post_revision, recorded_at
+            FROM route_operation_receipts
+            ORDER BY run_id, operation_id
+            ",
+        )
+        .map_err(|source| BelayError::sqlite(database_path, source))?;
+    statement
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+            ))
+        })
+        .map_err(|source| BelayError::sqlite(database_path, source))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|source| BelayError::sqlite(database_path, source))
 }
 
 fn replace_database(active: &Path, temporary: &Path, backup: &Path) -> Result<(), BelayError> {

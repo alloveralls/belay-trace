@@ -14,6 +14,7 @@ pub mod goal;
 pub mod markdown;
 pub mod reconcile;
 pub mod repository;
+pub mod route;
 pub mod search;
 pub mod store;
 pub mod trace_ids;

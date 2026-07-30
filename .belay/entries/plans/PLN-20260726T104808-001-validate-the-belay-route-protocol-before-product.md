@@ -2,11 +2,11 @@
 schema_version: 1
 id: PLN-20260726T104808-001-validate-the-belay-route-protocol-before-product
 type: plan
-title: Validate the Belay Route protocol before productization
-status: draft
+title: Implement the CLI-first Route MVP
+status: approved
 created_at: 2026-07-26T10:48:08+09:00
-updated_at: 2026-07-26T10:48:19+09:00
-revision: 4
+updated_at: 2026-07-30T06:17:27+09:00
+revision: 12
 tags: []
 links:
 - relation: references
@@ -23,64 +23,62 @@ metadata: {}
 ### Problem
 
 - Belayは開発の事実、判断、履歴、Evidenceを保持できるが、人間がそれらを現在の判断へ再構成する認知負荷は残る。
-- 強いAIと良いpromptだけでも類似の支援が可能なため、Routeが独立機能として必要かはUnknownである。
-- 旧Route GoalはVision、初期能力、有効性評価、一般化を混在させ、REV-20260726T101157-001で検証不能と指摘された。
+- AIとの作業は複数thread間でinterleaveし、会話履歴だけでは現在の主題、前提、未決定、次の判断へ即座に戻れない。
+- 自由文のAI出力と人間の短い応答だけでは、どのsnapshotとProposalを何の範囲で承認したかを機械的に確定できない。
 - 固定フォーマットは比較可能性とprovenanceを与える一方、誤った分析を整然と提示するstructured wrongnessを生む可能性がある。
 
 ### Desired Outcome
 
 - Belayの型付きtraceをversioned Route Inputへ変換し、外部AIによる意味的推論を、決定的にvalidation可能なAssessment、Proposal、Human Response、Materialization Preview、Reconciliation Resultとして扱える最小protocolを定義する。
-- 既知解を持つ固定シナリオで、通常のAIとBelayだけのbaselineよりblocking条件を一貫して表面化できるか検証し、継続、縮小、撤退を判断する。
+- primary threadを指定してCLI runを開始し、中断後に再開し、人間が承認した範囲だけをBelayへ安全にmaterializeできるMVPを実装する。
 
 ### Success Signals
 
 - Route protocolの各documentがschema validationを通り、Belay参照、分類、provenance、承認範囲を機械的に検査できる。
-- seedしたblocking条件の90%以上を人間の選択前に表面化し、baselineを20 percentage points以上上回る。
-- 未承認内容がBelayの正式記録または実装承認へ変換される事例が0件である。
-- 2名以上の独立reviewerが、承認、未承認、却下、保留、未検証の状態を一致して再構築できる。
-- Goalの撤退条件を適用できるだけのEvidenceが残る。
+- `.belay/state/route/<run-id>/`から同一端末でrunを再開できる。
+- stale、未承認、proposal mismatch、missing referenceをmaterialization前に拒否できる。
+- Previewと実際のBelay変更をReconciliation Resultで照合できる。
+- 6 documentを通るCLI end-to-end testがpassing Evidenceを残す。
 
 ### Constraints
 
-- Tier 3としてGoal承認、Plan承認、実装開始、評価fixture固定を別Human Gateにする。
+- Tier 3としてGoal/Plan承認と実装開始を別Human Gateにする。
 - Belay coreと既存CLIはLLMを呼ばず、Route reasoningは外部AIが担当する。
 - Route protocolはBelayの公開された出力を入力とし、SQLiteやmanaged Markdownの内部構造へ直接依存しない。
-- 初期reference implementationはBelay本体から依存されないrepository-localな独立packageまたはharnessとし、production `belay route` commandを追加しない。
+- 決定的なrun管理、validation、preview、materialization、reconciliationはproduction `belay route` CLIとして実装する。
 - Routeの推論結果は暫定情報であり、BelayのSource of Truthと競合させない。
+- run bundleは`.belay/state/route/`に保存し、review artifactまたはGit共有対象にしない。
 - Browse対応はGOAL-20260726T103644-001の後続作業とし、本Planに含めない。
-- 評価記録は人間の理解済みを主張せず、提示内容、具体的応答、採点結果だけを記録する。
 
 ### Non-goals
 
-- 実開発で時間、読解量、手戻りが改善したと主張すること。
+- モデル進化後の価値またはbaselineへの優位性を評価すること。
 - Routeを独立サービスまたは法人向け製品として実装すること。
 - 複数モデル、組織、権限、課金、ホスティングへ一般化すること。
 - Product Map、Requirement、Route ProposalをBelayのfirst-class persistence modelへ追加すること。
-- Browse UI、承認UI、自動Issue、自動PR、自動実装を追加すること。
+- repository-wide task manager、Browse UI、MCP、承認UI、自動Issue、自動PR、自動実装を追加すること。
 - 将来の高性能モデルに合わせたHuman Gate緩和条件を決めること。
 
 ### Assumptions
 
 - **This is a hypothesis.** versionedな入出力契約と承認境界は、通常の自由対話よりblocking条件の検出と判断履歴の再構築を一貫させる。
-- **This is a hypothesis.** 初期能力は本番機能を作らず、固定fixture、外部AI、standalone validator、manual Human Responseで評価できる。
-- **This is a hypothesis.** 最低12回の評価と2名の独立reviewerは、製品有効性ではなくprotocolの初期能力を反証するには十分である。
-- **This is a hypothesis.** 既存の`belay context compile`またはexport出力から、内部storageへ依存せずRoute Inputを構成できる。
+- **This is a hypothesis.** `.belay/state/route/`のlocal resumeとBelay成果物からの再生成で、MVPに必要な中断耐性を満たせる。
+- **This is a hypothesis.** 既存の`belay context compile`または公開read outputを基礎に、内部storageへ依存しないRoute Inputを構成できる。
 
 ### Unknowns / Decisions Needed
 
-- standalone packageの実装言語と配置。推奨はBelayに依存されない小さなRust packageまたは同等の独立harnessだが、contract設計後に最小実装を選ぶ。
-- Route outputを評価中の一時データとするか、raw evaluation artifactとしてversion controlへ残すか。
-- baseline promptをどこまで通常利用に近づけ、Route protocolの知識を除外するか。
-- fixtureの難易度と、複数blocking条件を一つのcaseへ含めるか。
-- 2名のreviewerのblind scoringを、構想者とfresh-context Claudeで十分とするか。
-- 90%と20 percentage pointsという初期閾値が妥当か。Plan承認前に人間が修正可能であり、評価開始後は変更しない。
+- 6 documentを個別fileにするか、一つのrun manifestとappend-only eventで保持するか。
+- Route Inputへ必要な最小Belay read contract。
+- materializationのatomicityとidempotency contract。
+- `revise`を直接materialize可能な応答とするか、新Proposal revisionを要求するか。
 
 ## Scope and Approach
 
-### 1. Preserve the vision without mixing it into the experiment
+### 1. Fix the Route run boundary
 
-- `docs/design/route.md`へ、追跡可能な進化的開発、BelayとRouteの境界、accountabilityと認知的関与、将来の権限変化、後続Goalを記録する。
-- 初期protocol Goalの成否判定には、Visionの将来要件を混入させない。
+- 1 runは一つの明示primary seedを持ち、必要な関連threadだけをsnapshotへ含める。
+- repository-wideな委任、優先順位、WIP、通知、統合順序は後続toolへ分離する。
+- run stateは`.belay/state/route/<run-id>/`に置き、正式なBelay entryと区別する。
 
 ### 2. Define stable protocol envelopes
 
@@ -91,81 +89,73 @@ metadata: {}
 - Materialization Preview
 - Reconciliation Result
 
-各documentはschema version、Belay reference、input fingerprint、Fact、Observation、Assumption、Hypothesis、Unknown、Conflict、Proposal、provenance、limitations、authority stateを必要な範囲で型付けする。候補数と文章量は固定せず、`stop`、`insufficient-context`、`no-safe-route`を正規の結果として扱う。
+各documentはschema version、run ID、Belay reference、input fingerprint、artifact revision/hash、Fact、Human Observation、Assumption、Hypothesis、Unknown、Conflict、Proposal、provenance、limitations、authority stateを必要な範囲で型付けする。`stop`、`insufficient-context`、`no-safe-route`を正規の結果として扱う。
 
-### 3. Keep inference outside Belay and validation deterministic
+### 3. Generate and validate Route Input
 
-- 外部AIへRoute Inputとprotocol instructionを渡し、構造化outputを生成するreference flowを作る。
-- standalone validatorはschema、参照形式、承認状態、未承認materialization、Reconciliation整合を決定的に検査する。
-- Belay側のread contractが不足する場合、内部storageを直接読む回避策を取らず、追加interfaceをDecision候補として人間へ提示する。
+- `belay route start --seed <display-id>`相当で、公開read contractからsnapshotとfingerprintを生成する。
+- resume時と後続artifact取込時に、schema、reference、revision、fingerprint、stalenessを検査する。
+- run bundle消失時は同じseedから新runを生成できるが、外部AI outputの同一性は保証しない。
 
-### 4. Pre-register a fixed evaluation
+### 4. Keep semantic reasoning external
 
-- blocking Constraint conflict
-- contradictory Decision
-- implemented but unverified work
-- unsupported Assumption
-- unapproved or deferred scope
+- Agent Skillまたは外部agentがRoute Inputを読み、AssessmentとProposalを構造化してrunへ渡す。
+- Belayは意味内容の正しさを判定せず、型、出典、参照、authority stateを決定的に検証する。
+- AssessmentとProposalはadvisoryであり、単独では正式状態を変更しない。
 
-を含む既知解fixtureを作る。各caseは正解ラベル、重大度、期待されるstopまたはHuman Decision、許容される代替表現を持つ。
+### 5. Bind human response to an exact proposal
 
-Route conditionとbaseline conditionへ同じBelay stateを渡し、実行前にprompt、run数、primary metric、採点rubric、reviewer、失敗条件を固定する。
+- 人間はAIチャットでProposalを選択、修正、却下または保留する。
+- AIは応答をHuman Responseへ変換し、Belayは対象input fingerprint、proposal revision/hash、action、承認範囲を検証する。
+- `revise`のauthority contractは実装前に確定する。
 
-### 5. Separate behavioral evidence from claims of understanding
+### 6. Preview, materialize, and reconcile
 
-- Human Responseには採用、修正、却下、保留、理由、承認範囲を記録する。
-- Evidenceは`decision-response`または同等の限定された事実を記録し、`human understood`とは表現しない。
-- reviewerは復唱ではなく、seedしたblocking帰結が人間の選択前に表面化し、具体的応答へ反映されたかを採点する。
-
-### 6. Reconcile and decide whether Route should continue
-
-- 評価結果をGoal Criteriaへ対応付け、accepted、unaccepted、deferred、unverifiedを再構築する。
-- 成功時も直ちに製品化せず、実開発有効性を検証する後続Goalを提案する。
-- baselineが同等なら独立機能化を撤退し、必要なcontractまたはSkill改善だけをBelay側へ還元する。
+- Materialization Previewは予定するentry、link、status操作を副作用なしで列挙する。MVPのEvidenceはGoal Coverageとしてread-onlyで参照し、新規Evidence記録は既存の`belay verify` workflowに残す。
+- materialization直前にもstale検査を行い、明示承認されたoperationだけを適用する。
+- Reconciliation Resultは予定、成功、失敗、未適用、deferred、現在のBelay stateを照合し、部分失敗から安全に再開できる情報を残す。
 
 ## Delivery Map
 
 | ID | Goal item | Outcome / Task | Actor | State | Verification / Evidence |
 | --- | --- | --- | --- | --- | --- |
-| T-001 | SC-001, SC-007 | Route Vision、Phase 6との境界、accountabilityと認知的関与、protocol用語をdurable designへ分離する | AI + Human | not-started | fresh-context semantic review; Goalとdesignの重複確認 |
-| T-002 | SC-001, SC-003, SC-004 | 6種類のversioned Route document contract、authority state、provenance、failure resultを定義する | AI | not-started | schema examplesとdeterministic validation tests |
-| T-003 | SC-001, SC-003, SC-004 | Belayの公開read outputだけを使うstandalone validatorとreference flowを作り、未承認書き込みを拒否する | AI | not-started | unit/integration tests; Belay coreからRouteへの依存がないことのdiff review |
-| T-004 | SC-002, SC-005, SC-006 | 5種類以上のseeded blocking条件、正解ラベル、許容表現を持つ固定fixture corpusを作成する | AI + Human | not-started | fixture lint; 人間によるfixture freeze approval Evidence |
-| T-005 | SC-005, SC-006 | baseline prompt、Route prompt、12回以上のrun matrix、primary metric、blind scoring rubric、失敗条件を事前登録する | AI + Human | not-started | pre-registration review; 評価開始前のhuman approval Evidence |
-| T-006 | SC-002, SC-003, SC-005, SC-006 | Route conditionとbaseline conditionをfresh contextで実行し、Human Responseを含むraw結果を採取する | AI + Human | not-started | schema-valid raw artifacts; 未承認正式記録0件 |
-| T-007 | SC-006, SC-007 | 最低2名の独立reviewerがblind scoringと承認状態再構築を行い、相違を調停する | Human + independent AI | not-started | detection rate、baseline差、reviewer agreement、review entries |
-| T-008 | SC-001..SC-007 | Goal、protocol、評価結果、Evidence、未解決事項をreconcileし、継続、縮小、撤退を決定する | AI + Human | not-started | coverage、fresh-context review、human acceptanceまたはwithdrawal Decision |
+| T-001 | SC-001, SC-006 | Route run lifecycle、artifact ownership、authority state、failure stateをdurable designとして確定する | AI + Human | verified | approved Goal/Plan; `docs/design/route.md`; EVD-20260729T215529-001 |
+| T-002 | SC-001, SC-003, SC-004 | 6種類のversioned document schema、fingerprint、revision/hash、provenanceを実装する | AI | verified | `src/route.rs`; EVD-20260729T223748-001 |
+| T-003 | SC-002, SC-005 | primary seedからRoute Inputを生成し、`.belay/state/route/`へatomicに保存・resumeする | AI | verified | start/status/template CLI tests; EVD-20260729T223748-001 |
+| T-004 | SC-001, SC-002, SC-007 | 外部AIのAssessment/Proposal取込とschema、reference、stale validationを実装する | AI | verified | submit and stale tests; EVD-20260729T223748-001 |
+| T-005 | SC-003, SC-007 | Human Response取込とproposal bindingを実装し、未承認・mismatch・staleを拒否する | AI | verified | exact hash/authority tests; EVD-20260729T223748-001 |
+| T-006 | SC-003, SC-004 | 副作用のないMaterialization Previewと明示承認済みoperationのmaterializationを実装する | AI | verified | preview/apply CLI test; EVD-20260729T223748-001 |
+| T-007 | SC-004, SC-005, SC-007 | Reconciliation Result、partial failure、idempotent resumeを実装する | AI | verified | focused recovery tests; EVD-20260730T061625-001 |
+| T-008 | SC-001..SC-007 | CLI end-to-end、docs、Skill guidance、独立review、Evidenceを完成させる | AI + independent reviewer | verified | EVD-20260730T061625-001; REV-20260729T230114-001 approved |
 
 ## Human Gates
 
 - Gate 1: 本Planと改訂Goalの承認。承認しても実装は開始しない。
 - Gate 2: 実装開始の明示承認。`jj new`、Work作成、source変更はこの後に行う。
-- Gate 3: fixture、prompt、metric、閾値、run matrixのfreeze承認。承認後は結果を見て変更しない。
-- Gate 4: 評価結果にもとづく継続、縮小、撤退の判断。
+- Gate 3: Materialization Previewで示された正式なBelay変更の承認。Route機能は既存repositoryのHuman Gateを代替しない。
+- Gate 4: 実装結果の受入れ、Pull Request作成、mergeはそれぞれ既存ルールに従う。
 
 ## Validation Strategy
 
 - Goal lintとPlan構造のfocused review
 - contract sampleのschema validation
 - invalid classification、missing provenance、unknown reference、unsupported version、unapproved materialization、stale inputのnegative tests
-- 同一fixtureからのRouteとbaselineのfresh-context run
-- blind scoringとreviewer disagreementの保存
-- Belay core、CLI、Browse、storage schemaが変更されていないことのdiff review
+- pause/resume、run bundle消失後のInput再生成、partial failure recovery
+- previewとmaterialized Belay stateの一致
+- Belay coreがLLM、API key、network accessへ依存しないことのdiff review
 - `belay sync`、`belay doctor`、`belay coverage`、`jj st`、`jj diff`
 
 ## Risks and Responses
 
-- fixture overfitting: hidden holdout caseを最低1件含め、protocol authorが採点しないrunを設ける。
-- weak baseline: baselineにも同じBelay contextと一般的な高品質分析依頼を与え、Route固有schemaとrubricだけを除外する。
 - schema bloat: required fieldを最小化し、追加情報をoptional blockへ分離する。
-- ceremonial Human Response: 理解確認ではなく、seedしたblocking帰結への具体的な採用、修正、却下、保留を採点する。
+- ceremonial Human Response: exact fingerprintとproposal revisionへ結び付かない応答を承認として扱わない。
 - structured wrongness: Fact、Assumption、Hypothesis、Unknownを分離し、sourceなしFactをvalidatorで拒否する。
-- accidental productization: production CLI、Browse、hosted service、automatic writeを本Planから除外する。
+- TOCTOU: preview後、materialization直前にfingerprintを再検査する。
+- partial write: apply前にmanifestを`applying`へ遷移し、各mutationと同一SQLite transactionでoperation receiptを記録する。
 
 ## Review Requirements
 
-- protocol authorとは別のfresh-context reviewerがGoal、Plan、contract、fixture、評価結果をレビューする。
-- fixtureとscoringのreviewerは、可能な範囲で期待されるRoute出力を見ずに正解ラベルとraw outputを採点する。
+- 実装者とは別のfresh-context reviewerがGoal、Plan、contract、diff、validation結果をレビューする。
 - security、privacy、外部送信が発生する実装へ変わる場合は、Planを更新し`requires_human_review: true`の専門reviewを追加する。
 
 requires_human_review: true

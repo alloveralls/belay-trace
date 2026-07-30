@@ -5,7 +5,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, pa
 
 use crate::error::BelayError;
 
-pub const LATEST_SCHEMA_VERSION: i64 = 3;
+pub const LATEST_SCHEMA_VERSION: i64 = 4;
 
 const MIGRATION_1: &str = r#"
 CREATE TABLE entries (
@@ -156,6 +156,22 @@ CREATE TABLE evidence_links (
 CREATE INDEX idx_evidence_links_target ON evidence_links(target, relation);
 "#;
 
+const MIGRATION_4: &str = r#"
+CREATE TABLE route_operation_receipts (
+    run_id TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    preview_hash TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('changed', 'unchanged')),
+    target TEXT NOT NULL,
+    post_revision INTEGER NOT NULL CHECK (post_revision >= 1),
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, operation_id)
+);
+
+CREATE INDEX idx_route_operation_receipts_preview
+ON route_operation_receipts(run_id, preview_hash);
+"#;
+
 pub fn initialize(path: &Path) -> Result<(), BelayError> {
     let mut connection =
         Connection::open(path).map_err(|source| BelayError::sqlite(path, source))?;
@@ -229,6 +245,7 @@ pub fn verify_schema_health(connection: &Connection, path: &Path) -> Result<(), 
         ("table", "evidence_links"),
         ("table", "sync_state"),
         ("table", "agent_integrations"),
+        ("table", "route_operation_receipts"),
         ("index", "idx_entries_display_id"),
         ("index", "idx_entries_type_status"),
         ("index", "idx_entry_links_to"),
@@ -237,6 +254,7 @@ pub fn verify_schema_health(connection: &Connection, path: &Path) -> Result<(), 
         ("index", "idx_evidence_commit"),
         ("index", "idx_evidence_links_target"),
         ("index", "idx_sync_state_source_path"),
+        ("index", "idx_route_operation_receipts_preview"),
     ] {
         let present = connection
             .query_row(
@@ -405,6 +423,21 @@ pub fn migrate(connection: &mut Connection, path: &Path) -> Result<(), BelayErro
             .map_err(|source| BelayError::sqlite(path, source))?;
     }
 
+    if current_version < 4 {
+        transaction
+            .execute_batch(MIGRATION_4)
+            .map_err(|source| BelayError::sqlite(path, source))?;
+        transaction
+            .execute(
+                "
+                INSERT INTO schema_migrations(version, name, applied_at)
+                VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                ",
+                params![4, "add Route operation receipts"],
+            )
+            .map_err(|source| BelayError::sqlite(path, source))?;
+    }
+
     transaction
         .commit()
         .map_err(|source| BelayError::sqlite(path, source))
@@ -544,7 +577,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "migration history is inconsistent: version 2 is missing while version 3 is recorded"
+            "migration history is inconsistent: version 2 is missing while version 4 is recorded"
         );
         let entries_exist: i64 = connection
             .query_row(
