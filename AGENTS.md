@@ -119,6 +119,15 @@ implications exist, assumptions cannot be validated, rollback is unclear,
 production impact is uncertain, or architectural impact is broad. Human
 review is additional to, not a replacement for, independent agent review.
 
+## Release Versioning
+
+When preparing a release, update the package version in `Cargo.toml` and the
+root `belay-trace` package entry in `Cargo.lock` together. Before opening the
+release PR, verify that `belay --version`, `CARGO_PKG_VERSION`, and the root
+lockfile package version agree. Keep historical trace entries and versions of
+external dependencies unchanged. The CLI regression test in `tests/cli.rs`
+must remain passing so future version bumps cannot omit one of these locations.
+
 ## Version Control
 
 Use `jj` for all version-control operations. Do not use raw `git` commands

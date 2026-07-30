@@ -13,6 +13,30 @@ fn belay() -> Command {
     Command::new(env!("CARGO_BIN_EXE_belay"))
 }
 
+#[test]
+fn cli_version_matches_the_package_and_lockfile() {
+    let output = belay().arg("--version").output().expect("run --version");
+    assert!(output.status.success(), "{output:?}");
+    let expected = env!("CARGO_PKG_VERSION");
+    assert_eq!(
+        String::from_utf8(output.stdout)
+            .expect("version stdout")
+            .trim(),
+        format!("belay {expected}")
+    );
+
+    let lockfile = fs::read_to_string(format!("{}/Cargo.lock", env!("CARGO_MANIFEST_DIR")))
+        .expect("read Cargo.lock");
+    let package = lockfile
+        .split("[[package]]")
+        .find(|package| package.trim_start().starts_with("name = \"belay-trace\""))
+        .expect("belay-trace package in Cargo.lock");
+    assert!(
+        package.contains(&format!("version = \"{expected}\"")),
+        "Cargo.lock package version must match Cargo.toml"
+    );
+}
+
 #[cfg(unix)]
 fn update_existing_project_script() -> Command {
     let mut command = Command::new("sh");
