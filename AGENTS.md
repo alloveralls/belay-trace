@@ -101,14 +101,43 @@ belay verify record --kind human-approval --verdict pass \
 
 ## Model and Review Budgeting
 
-- Planning, architecture, tradeoff analysis, and review: high-reasoning
-  models.
-- Routine implementation: medium-reasoning models. Mechanical, localized
-  edits: low-reasoning models are acceptable.
-- When a separate review is required, use one focused high-reasoning diff
-  review. Do not invoke multiple review agents automatically. Reserve
-  cross-model review for high-risk, broad, security-sensitive,
-  production-impacting, or architecturally significant changes.
+- The primary agent uses the repository default. Increase reasoning only when
+  ambiguous planning, architecture, tradeoff analysis, or unresolved risk
+  requires it.
+- The project `implementer` uses low reasoning for approved, bounded Tier 2
+  implementation.
+- The project `reviewer` uses low reasoning for bounded Tier 2 review.
+- The project `high_risk_reviewer` uses high reasoning for Tier 3, broad,
+  security-sensitive, production-impacting, or difficult-to-roll-back review.
+- Use one focused review agent when separate review is required. Do not invoke
+  multiple review agents automatically.
+
+## Agent Roles
+
+Repository-scoped model and agent settings live in `.codex/config.toml` and
+`.codex/agents/*.toml`. Do not duplicate model slugs or reasoning values here.
+
+- The primary agent owns planning, architecture, tradeoff decisions, human
+  gates, Belay reconciliation, integration of delegated work, and final
+  delivery.
+- Tier 1 does not use a subagent by default.
+- For Tier 2 implementation, use the project `implementer` agent only after
+  explicit implementation approval and only when the task is bounded, expected
+  behavior is clear, focused verification is available, and no Tier 3 area or
+  unresolved material decision is involved.
+- Give the implementer the approved scope, fully qualified Delivery Map task,
+  acceptance criteria, relevant decisions, allowed files or components, and
+  validation requirements. The primary agent must inspect and integrate the
+  returned implementation and Evidence.
+- Do not delegate Tier 3 implementation to the `implementer`. The primary agent
+  retains it unless the human explicitly approves another qualified approach.
+- When independent review is required for bounded Tier 2 work, use the project
+  `reviewer` agent in a fresh context.
+- For Tier 3, security-sensitive, broad, production-impacting, or
+  difficult-to-roll-back review, use the project `high_risk_reviewer` agent in
+  a fresh context.
+- An implementation agent must never review its own work. Review agents must
+  remain read-only and must not remediate their findings.
 
 ## Implementation Flow
 
@@ -227,6 +256,8 @@ belay coverage
 For Tier 2 and Tier 3, record the validation outcome in the Work entry and in a
 Review entry when a separate review was performed.
 
+@RTK.md
+
 <!-- belay-trace:start -->
 ## belay-trace
 
@@ -238,5 +269,3 @@ If the Skill is unavailable, run
 `belay context compile "<task>" --format agent --budget 4000` before broad
 history reads and preserve all repository-specific human approval gates.
 <!-- belay-trace:end -->
-
-@RTK.md
