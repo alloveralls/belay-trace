@@ -114,8 +114,9 @@ belay verify record --kind human-approval --verdict pass \
 
 ## Agent Roles
 
-Repository-scoped model and agent settings live in `.codex/config.toml` and
-`.codex/agents/*.toml`. Do not duplicate model slugs or reasoning values here.
+Repository-scoped model and agent settings live in `.codex/config.toml`,
+`.codex/agents/*.toml`, `.claude/settings.json`, and
+`.claude/agents/*.md`. Do not duplicate model slugs or reasoning values here.
 
 - The primary agent owns planning, architecture, tradeoff decisions, human
   gates, Belay reconciliation, integration of delegated work, and final
@@ -134,8 +135,9 @@ Repository-scoped model and agent settings live in `.codex/config.toml` and
 - When independent review is required for bounded Tier 2 work, use the project
   `reviewer` agent in a fresh context.
 - For Tier 3, security-sensitive, broad, production-impacting, or
-  difficult-to-roll-back review, use the project `high_risk_reviewer` agent in
-  a fresh context.
+  difficult-to-roll-back review, use the project high-risk review agent in a
+  fresh context: `high_risk_reviewer` in Codex and `high-risk-reviewer` in
+  Claude Code.
 - An implementation agent must never review its own work. Review agents must
   remain read-only and must not remediate their findings.
 
