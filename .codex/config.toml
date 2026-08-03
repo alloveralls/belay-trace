@@ -1,0 +1,14 @@
+model = "gpt-5.6-sol"
+model_reasoning_effort = "low"
+
+[agents.implementer]
+description = "Approved bounded Tier 2 implementation"
+config_file = "./agents/implementer.toml"
+
+[agents.reviewer]
+description = "Independent bounded Tier 2 review"
+config_file = "./agents/reviewer.toml"
+
+[agents.high_risk_reviewer]
+description = "Independent Tier 3 and high-risk review"
+config_file = "./agents/high-risk-reviewer.toml"
