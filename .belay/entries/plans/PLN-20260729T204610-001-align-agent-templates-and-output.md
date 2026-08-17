@@ -5,8 +5,8 @@ type: plan
 title: align-agent-templates-and-output
 status: approved
 created_at: 2026-07-29T20:46:10+09:00
-updated_at: 2026-07-29T20:57:54+09:00
-revision: 5
+updated_at: 2026-08-17T18:48:29+09:00
+revision: 1
 tags: []
 links:
 - relation: supports

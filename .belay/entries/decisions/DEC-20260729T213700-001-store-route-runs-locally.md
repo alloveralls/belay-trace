@@ -5,8 +5,8 @@ type: decision
 title: store-route-runs-locally
 status: accepted
 created_at: 2026-07-29T21:37:00+09:00
-updated_at: 2026-07-29T21:40:20+09:00
-revision: 5
+updated_at: 2026-08-17T18:48:29+09:00
+revision: 1
 tags: []
 links:
 - relation: references

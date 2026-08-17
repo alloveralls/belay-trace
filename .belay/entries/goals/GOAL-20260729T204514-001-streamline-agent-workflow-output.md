@@ -5,8 +5,8 @@ type: goal
 title: streamline-agent-workflow-output
 status: active
 created_at: 2026-07-29T20:45:14+09:00
-updated_at: 2026-07-29T20:46:20+09:00
-revision: 3
+updated_at: 2026-08-17T18:48:29+09:00
+revision: 1
 tags: []
 links: []
 metadata: {}

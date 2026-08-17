@@ -5,8 +5,8 @@ type: work
 title: Finalize user-tuned Explore graph spacing
 status: completed
 created_at: 2026-07-25T21:56:24+09:00
-updated_at: 2026-07-25T21:56:45+09:00
-revision: 3
+updated_at: 2026-08-17T18:48:29+09:00
+revision: 1
 tags: []
 links:
 - relation: follows-up

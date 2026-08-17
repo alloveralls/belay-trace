@@ -5,8 +5,8 @@ type: goal
 title: Deliver a safe CLI-first Belay Route MVP
 status: active
 created_at: 2026-07-26T01:40:20+09:00
-updated_at: 2026-07-29T21:55:36+09:00
-revision: 6
+updated_at: 2026-08-17T18:48:29+09:00
+revision: 1
 tags: []
 links:
 - relation: references

@@ -5,8 +5,8 @@ type: review
 title: review-conversational-preview
 status: completed
 created_at: 2026-07-30T20:30:35+09:00
-updated_at: 2026-07-30T20:31:23+09:00
-revision: 3
+updated_at: 2026-08-17T18:48:29+09:00
+revision: 1
 tags: []
 links:
 - relation: reviews

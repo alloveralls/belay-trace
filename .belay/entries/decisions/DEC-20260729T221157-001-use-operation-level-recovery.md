@@ -5,8 +5,8 @@ type: decision
 title: use-operation-level-recovery
 status: accepted
 created_at: 2026-07-29T22:11:57+09:00
-updated_at: 2026-07-29T22:12:04+09:00
-revision: 5
+updated_at: 2026-08-17T18:48:29+09:00
+revision: 1
 tags: []
 links:
 - relation: references

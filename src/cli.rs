@@ -169,6 +169,8 @@ const SEARCH_AFTER_HELP: &str = r#"Behavior and Side Effects:
 Examples:
   belay search "sqlite migration"
   belay search --type decision --status accepted
+  belay search --status draft --status active
+  belay search --exclude-status completed --exclude-status abandoned
   belay search --id DEC-20260606T115000-001-sqlite
 
 Exit Status:
@@ -641,9 +643,13 @@ struct SearchArgs {
     #[arg(long = "type", value_name = "TYPE")]
     entry_type: Option<String>,
 
-    /// Filter by type-specific status.
-    #[arg(long)]
-    status: Option<String>,
+    /// Include entries with this status. Repeatable.
+    #[arg(long, value_name = "STATUS")]
+    status: Vec<String>,
+
+    /// Exclude entries with this status. Repeatable.
+    #[arg(long = "exclude-status", value_name = "STATUS")]
+    exclude_status: Vec<String>,
 
     /// Filter by an exact tag.
     #[arg(long)]
@@ -1052,15 +1058,21 @@ fn execute(cli: Cli, current_dir: &Path) -> Result<(), BelayError> {
                 .as_deref()
                 .map(EntryType::from_str)
                 .transpose()?;
-            let status = arguments
+            let status_include = arguments
                 .status
-                .as_deref()
-                .map(EntryStatus::from_str)
-                .transpose()?;
+                .into_iter()
+                .map(|value| EntryStatus::from_str(&value))
+                .collect::<Result<Vec<_>, _>>()?;
+            let status_exclude = arguments
+                .exclude_status
+                .into_iter()
+                .map(|value| EntryStatus::from_str(&value))
+                .collect::<Result<Vec<_>, _>>()?;
             let request = SearchRequest {
                 query: arguments.query.unwrap_or_default(),
                 entry_type,
-                status,
+                status_include,
+                status_exclude,
                 tag: arguments.tag,
                 display_id: arguments.id,
                 limit: arguments.limit,
@@ -1471,8 +1483,27 @@ fn print_search_results(request: &SearchRequest, results: &[search::SearchResult
     if let Some(entry_type) = request.entry_type {
         println!("Type: {entry_type}");
     }
-    if let Some(status) = request.status {
-        println!("Status: {status}");
+    if !request.status_include.is_empty() {
+        println!(
+            "Status include: {}",
+            request
+                .status_include
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if !request.status_exclude.is_empty() {
+        println!(
+            "Status exclude: {}",
+            request
+                .status_exclude
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
     if let Some(tag) = &request.tag {
         println!("Tag: {tag}");

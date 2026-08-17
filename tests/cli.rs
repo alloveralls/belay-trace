@@ -2052,6 +2052,94 @@ fn search_supports_exact_id_structured_filters_and_bm25_deduplication() {
 }
 
 #[test]
+fn search_supports_repeated_status_include_and_exclude() {
+    let temporary = initialize_repository();
+    let proposed = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Proposed storage",
+                "--body",
+                "keep proposed",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add proposed"),
+    );
+    let accepted = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Accepted storage",
+                "--body",
+                "keep accepted",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add accepted"),
+    );
+    let status = belay()
+        .args(["status", &accepted, "accepted"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("accept decision");
+    assert!(status.status.success(), "{status:?}");
+
+    let help = belay()
+        .args(["search", "--help"])
+        .output()
+        .expect("search help");
+    let help_stdout = String::from_utf8(help.stdout).expect("help stdout");
+    assert!(help_stdout.contains("--exclude-status"));
+    assert!(help_stdout.contains("--status draft --status active"));
+
+    let included = belay()
+        .args(["search", "--type", "decision", "--status", "accepted"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("include accepted");
+    assert!(included.status.success(), "{included:?}");
+    let included_stdout = String::from_utf8(included.stdout).expect("include stdout");
+    assert!(included_stdout.contains("Status include: accepted"));
+    assert!(included_stdout.contains(&accepted));
+    assert!(!included_stdout.contains(&proposed));
+
+    let excluded = belay()
+        .args([
+            "search",
+            "--type",
+            "decision",
+            "--exclude-status",
+            "proposed",
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("exclude proposed");
+    assert!(excluded.status.success(), "{excluded:?}");
+    let excluded_stdout = String::from_utf8(excluded.stdout).expect("exclude stdout");
+    assert!(excluded_stdout.contains("Status exclude: proposed"));
+    assert!(excluded_stdout.contains(&accepted));
+    assert!(!excluded_stdout.contains(&proposed));
+
+    let overlap = belay()
+        .args([
+            "search",
+            "--status",
+            "accepted",
+            "--exclude-status",
+            "accepted",
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("overlap");
+    assert_eq!(overlap.status.code(), Some(4));
+}
+
+#[test]
 fn search_rejects_non_contiguous_migration_history() {
     let temporary = initialize_repository();
     let decision = created_id(

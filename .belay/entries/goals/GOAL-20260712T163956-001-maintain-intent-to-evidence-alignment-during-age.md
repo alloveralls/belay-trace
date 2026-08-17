@@ -5,8 +5,8 @@ type: goal
 title: Maintain intent-to-evidence alignment during agent delivery
 status: completed
 created_at: 2026-07-12T16:39:56+09:00
-updated_at: 2026-07-27T19:24:53+09:00
-revision: 5
+updated_at: 2026-08-17T18:48:29+09:00
+revision: 1
 tags: []
 links: []
 metadata: {}

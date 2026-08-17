@@ -1,6 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::types::Value;
+use rusqlite::{Connection, OptionalExtension, params_from_iter};
 
 use crate::entry::{EntryStatus, EntryType};
 use crate::error::BelayError;
@@ -13,7 +14,8 @@ const EXCERPT_CHARS: usize = 320;
 pub struct SearchRequest {
     pub query: String,
     pub entry_type: Option<EntryType>,
-    pub status: Option<EntryStatus>,
+    pub status_include: Vec<EntryStatus>,
+    pub status_exclude: Vec<EntryStatus>,
     pub tag: Option<String>,
     pub display_id: Option<String>,
     pub limit: usize,
@@ -180,12 +182,20 @@ fn validate_request(request: &SearchRequest) -> Result<(), BelayError> {
     }
     if request.query.trim().is_empty()
         && request.entry_type.is_none()
-        && request.status.is_none()
+        && request.status_include.is_empty()
+        && request.status_exclude.is_empty()
         && request.tag.is_none()
         && request.display_id.is_none()
     {
         return Err(BelayError::Validation {
             message: "search requires a query or at least one structured filter".to_owned(),
+        });
+    }
+    let include = unique_statuses(&request.status_include);
+    let exclude = unique_statuses(&request.status_exclude);
+    if include.iter().any(|status| exclude.contains(status)) {
+        return Err(BelayError::Validation {
+            message: "status include and exclude must not overlap".to_owned(),
         });
     }
     if request
@@ -203,17 +213,102 @@ fn validate_request(request: &SearchRequest) -> Result<(), BelayError> {
     Ok(())
 }
 
+struct FilterBind {
+    predicate: String,
+    values: Vec<Value>,
+    next_index: usize,
+}
+
+impl FilterBind {
+    fn new(request: &SearchRequest, start_index: usize) -> Self {
+        let mut index = start_index;
+        let mut clauses = Vec::new();
+        let mut values = Vec::new();
+
+        let type_index = index;
+        index += 1;
+        clauses.push(format!(
+            "(?{type_index} IS NULL OR entry.type = ?{type_index})"
+        ));
+        values.push(optional_text(
+            request.entry_type.map(|value| value.to_string()),
+        ));
+
+        let include = unique_statuses(&request.status_include);
+        if !include.is_empty() {
+            let placeholders = numbered_placeholders(&mut index, include.len());
+            clauses.push(format!("entry.status IN ({placeholders})"));
+            values.extend(
+                include
+                    .into_iter()
+                    .map(|status| Value::Text(status.to_string())),
+            );
+        }
+        let exclude = unique_statuses(&request.status_exclude);
+        if !exclude.is_empty() {
+            let placeholders = numbered_placeholders(&mut index, exclude.len());
+            clauses.push(format!("entry.status NOT IN ({placeholders})"));
+            values.extend(
+                exclude
+                    .into_iter()
+                    .map(|status| Value::Text(status.to_string())),
+            );
+        }
+
+        let tag_index = index;
+        index += 1;
+        clauses.push(format!(
+            "(?{tag_index} IS NULL OR EXISTS (
+                  SELECT 1 FROM entry_tags tag
+                  WHERE tag.entry_id = entry.id AND tag.tag = ?{tag_index}
+              ))"
+        ));
+        values.push(optional_text(request.tag.clone()));
+
+        Self {
+            predicate: clauses.join(" AND "),
+            values,
+            next_index: index,
+        }
+    }
+}
+
+fn numbered_placeholders(index: &mut usize, count: usize) -> String {
+    let mut parts = Vec::with_capacity(count);
+    for _ in 0..count {
+        parts.push(format!("?{index}"));
+        *index += 1;
+    }
+    parts.join(", ")
+}
+
+fn unique_statuses(values: &[EntryStatus]) -> Vec<EntryStatus> {
+    let mut seen = BTreeSet::new();
+    let mut unique = Vec::new();
+    for status in values {
+        if seen.insert(*status) {
+            unique.push(*status);
+        }
+    }
+    unique
+}
+
+fn optional_text(value: Option<String>) -> Value {
+    match value {
+        Some(text) => Value::Text(text),
+        None => Value::Null,
+    }
+}
+
 fn exact_result(
     connection: &Connection,
     database_path: &std::path::Path,
     request: &SearchRequest,
     display_id: &str,
 ) -> Result<Option<SearchResult>, BelayError> {
-    let entry_type = request.entry_type.map(|value| value.to_string());
-    let status = request.status.map(|value| value.to_string());
-    let raw = connection
-        .query_row(
-            "
+    let filters = FilterBind::new(request, 2);
+    let sql = format!(
+        "
             SELECT entry.id, entry.display_id, entry.type, entry.title, entry.status,
                    entry.source_path,
                    COALESCE((
@@ -231,21 +326,16 @@ fn exact_result(
                    ), 0)
             FROM entries entry
             WHERE entry.display_id = ?1
-              AND (?2 IS NULL OR entry.type = ?2)
-              AND (?3 IS NULL OR entry.status = ?3)
-              AND (?4 IS NULL OR EXISTS (
-                  SELECT 1 FROM entry_tags tag
-                  WHERE tag.entry_id = entry.id AND tag.tag = ?4
-              ))
+              AND {}
             ",
-            params![
-                display_id,
-                entry_type.as_deref(),
-                status.as_deref(),
-                request.tag.as_deref()
-            ],
-            |row| raw_from_row(row, None),
-        )
+        filters.predicate
+    );
+    let mut values = vec![Value::Text(display_id.to_owned())];
+    values.extend(filters.values);
+    let raw = connection
+        .query_row(&sql, params_from_iter(values), |row| {
+            raw_from_row(row, None)
+        })
         .optional()
         .map_err(|source| BelayError::sqlite(database_path, source))?;
     raw.map(|raw| finalize_result(connection, database_path, raw, "exact display-ID match"))
@@ -263,7 +353,8 @@ fn load_entry_result(
         &SearchRequest {
             query: String::new(),
             entry_type: None,
-            status: None,
+            status_include: Vec::new(),
+            status_exclude: Vec::new(),
             tag: None,
             display_id: Some(display_id.to_owned()),
             limit: 1,
@@ -277,12 +368,11 @@ fn structured_results(
     database_path: &std::path::Path,
     request: &SearchRequest,
 ) -> Result<Vec<SearchResult>, BelayError> {
-    let entry_type = request.entry_type.map(|value| value.to_string());
-    let status = request.status.map(|value| value.to_string());
+    let filters = FilterBind::new(request, 1);
     let limit = i64::try_from(request.limit).expect("validated search limit fits i64");
-    let mut statement = connection
-        .prepare(
-            "
+    let limit_index = filters.next_index;
+    let sql = format!(
+        "
             SELECT entry.id, entry.display_id, entry.type, entry.title, entry.status,
                    entry.source_path,
                    COALESCE((
@@ -299,27 +389,19 @@ fn structured_results(
                        WHERE chunk.entry_id = entry.id ORDER BY chunk.ordinal LIMIT 1
                    ), 0)
             FROM entries entry
-            WHERE (?1 IS NULL OR entry.type = ?1)
-              AND (?2 IS NULL OR entry.status = ?2)
-              AND (?3 IS NULL OR EXISTS (
-                  SELECT 1 FROM entry_tags tag
-                  WHERE tag.entry_id = entry.id AND tag.tag = ?3
-              ))
+            WHERE {}
             ORDER BY entry.type, entry.display_id
-            LIMIT ?4
+            LIMIT ?{limit_index}
             ",
-        )
+        filters.predicate
+    );
+    let mut values = filters.values;
+    values.push(Value::Integer(limit));
+    let mut statement = connection
+        .prepare(&sql)
         .map_err(|source| BelayError::sqlite(database_path, source))?;
     let raw = statement
-        .query_map(
-            params![
-                entry_type.as_deref(),
-                status.as_deref(),
-                request.tag.as_deref(),
-                limit
-            ],
-            |row| raw_from_row(row, None),
-        )
+        .query_map(params_from_iter(values), |row| raw_from_row(row, None))
         .map_err(|source| BelayError::sqlite(database_path, source))?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|source| BelayError::sqlite(database_path, source))?;
@@ -334,11 +416,9 @@ fn keyword_results(
     request: &SearchRequest,
 ) -> Result<Vec<SearchResult>, BelayError> {
     let fts_query = plain_text_fts_query(&request.query)?;
-    let entry_type = request.entry_type.map(|value| value.to_string());
-    let status = request.status.map(|value| value.to_string());
-    let mut statement = connection
-        .prepare(
-            "
+    let filters = FilterBind::new(request, 2);
+    let sql = format!(
+        "
             SELECT entry.id, entry.display_id, entry.type, entry.title, entry.status,
                    entry.source_path, entry_fts.section, entry_fts.chunk_text,
                    entry.body, CAST(entry_fts.chunk_ordinal AS INTEGER),
@@ -346,30 +426,22 @@ fn keyword_results(
             FROM entry_fts
             JOIN entries entry ON entry.id = entry_fts.entry_id
             WHERE entry_fts MATCH ?1
-              AND (?2 IS NULL OR entry.type = ?2)
-              AND (?3 IS NULL OR entry.status = ?3)
-              AND (?4 IS NULL OR EXISTS (
-                  SELECT 1 FROM entry_tags tag
-                  WHERE tag.entry_id = entry.id AND tag.tag = ?4
-              ))
+              AND {}
             ORDER BY bm25(entry_fts), entry.status, entry.display_id,
                      CAST(entry_fts.chunk_ordinal AS INTEGER)
             ",
-        )
+        filters.predicate
+    );
+    let mut values = vec![Value::Text(fts_query)];
+    values.extend(filters.values);
+    let mut statement = connection
+        .prepare(&sql)
         .map_err(|source| BelayError::sqlite(database_path, source))?;
     let raw = statement
-        .query_map(
-            params![
-                fts_query,
-                entry_type.as_deref(),
-                status.as_deref(),
-                request.tag.as_deref()
-            ],
-            |row| {
-                let score = row.get::<_, f64>(10)?;
-                raw_from_row(row, Some(score))
-            },
-        )
+        .query_map(params_from_iter(values), |row| {
+            let score = row.get::<_, f64>(10)?;
+            raw_from_row(row, Some(score))
+        })
         .map_err(|source| BelayError::sqlite(database_path, source))?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|source| BelayError::sqlite(database_path, source))?;
@@ -525,5 +597,92 @@ mod tests {
         let excerpt = compact_excerpt(&"word ".repeat(100));
         assert!(excerpt.chars().count() <= EXCERPT_CHARS);
         assert!(!excerpt.contains('\n'));
+    }
+
+    #[test]
+    fn overlapping_status_include_and_exclude_are_rejected() {
+        let error = validate_request(&SearchRequest {
+            query: "trace".to_owned(),
+            entry_type: None,
+            status_include: vec![EntryStatus::Completed],
+            status_exclude: vec![EntryStatus::Completed],
+            tag: None,
+            display_id: None,
+            limit: 20,
+        })
+        .expect_err("overlap");
+        assert!(error.to_string().contains("must not overlap"));
+    }
+
+    #[test]
+    fn status_include_and_exclude_filter_structured_results() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(temporary.path().join(".git")).expect("git marker");
+        let repository = crate::repository::initialize(temporary.path())
+            .expect("init")
+            .repository;
+        let proposed = crate::store::create(
+            &repository,
+            EntryType::Decision,
+            "Keep proposed".to_owned(),
+            "proposed decision body".to_owned(),
+        )
+        .expect("create proposed");
+        let accepted = crate::store::create(
+            &repository,
+            EntryType::Decision,
+            "Promote accepted".to_owned(),
+            "accepted decision body".to_owned(),
+        )
+        .expect("create accepted");
+        crate::store::set_status(&repository, &accepted.display_id, EntryStatus::Accepted)
+            .expect("accept");
+
+        let included = search(
+            &repository,
+            &SearchRequest {
+                query: String::new(),
+                entry_type: Some(EntryType::Decision),
+                status_include: vec![EntryStatus::Accepted],
+                status_exclude: Vec::new(),
+                tag: None,
+                display_id: None,
+                limit: 20,
+            },
+        )
+        .expect("include");
+        assert_eq!(
+            included
+                .iter()
+                .map(|item| item.display_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![accepted.display_id.as_str()]
+        );
+
+        let excluded = search(
+            &repository,
+            &SearchRequest {
+                query: String::new(),
+                entry_type: Some(EntryType::Decision),
+                status_include: Vec::new(),
+                status_exclude: vec![EntryStatus::Proposed],
+                tag: None,
+                display_id: None,
+                limit: 20,
+            },
+        )
+        .expect("exclude");
+        assert_eq!(
+            excluded
+                .iter()
+                .map(|item| item.display_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![accepted.display_id.as_str()]
+        );
+        assert!(
+            !excluded
+                .iter()
+                .any(|item| item.display_id == proposed.display_id)
+        );
     }
 }

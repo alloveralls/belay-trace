@@ -5,8 +5,8 @@ type: review
 title: Review operational and observable Belay agent guidance
 status: completed
 created_at: 2026-07-26T13:51:48+09:00
-updated_at: 2026-07-28T20:20:12+09:00
-revision: 5
+updated_at: 2026-08-17T18:48:29+09:00
+revision: 1
 tags: []
 links:
 - relation: reviews

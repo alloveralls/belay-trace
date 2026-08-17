@@ -161,10 +161,11 @@ impl BrowseState {
     fn library(&self, query: &str) -> Result<HttpResponse, BelayError> {
         let q = query_value(query, "q").unwrap_or_default();
         let type_filter = query_value(query, "type").filter(|value| !value.is_empty());
-        let status_filter = query_value(query, "status").filter(|value| !value.is_empty());
-        let tag = query_value(query, "tag").filter(|value| !value.is_empty());
-        let searching =
-            !q.is_empty() || type_filter.is_some() || status_filter.is_some() || tag.is_some();
+        let (status_include, status_exclude) = parse_library_status_filters(query)?;
+        let searching = !q.is_empty()
+            || type_filter.is_some()
+            || !status_include.is_empty()
+            || !status_exclude.is_empty();
         let results = if searching {
             search::search_connection(
                 &self.snapshot.connection,
@@ -172,8 +173,9 @@ impl BrowseState {
                 &SearchRequest {
                     query: q.clone(),
                     entry_type: type_filter.as_deref().map(str::parse).transpose()?,
-                    status: status_filter.as_deref().map(str::parse).transpose()?,
-                    tag: tag.clone(),
+                    status_include: status_include.clone(),
+                    status_exclude: status_exclude.clone(),
+                    tag: None,
                     display_id: None,
                     limit: 100,
                 },
@@ -193,23 +195,19 @@ impl BrowseState {
             type_filter.as_deref(),
             &["", "goal", "plan", "decision", "work", "review", "note"],
         ));
-        body.push_str(&select(
+        let include_selected = status_include.first().map(ToString::to_string);
+        let exclude_selected = status_exclude.first().map(ToString::to_string);
+        body.push_str(&grouped_status_select(
             "status",
-            status_filter.as_deref(),
-            &[
-                "",
-                "draft",
-                "approved",
-                "active",
-                "completed",
-                "in-progress",
-                "blocked",
-                "accepted",
-                "pending",
-                "archived",
-            ],
+            "Any status",
+            include_selected.as_deref(),
         ));
-        body.push_str(&format!("<input name=\"tag\" value=\"{}\" placeholder=\"Exact tag\"><button type=\"submit\">Search</button></form></section>", escape(tag.as_deref().unwrap_or(""))));
+        body.push_str(&grouped_status_select(
+            "status_exclude",
+            "Exclude none",
+            exclude_selected.as_deref(),
+        ));
+        body.push_str("<button type=\"submit\">Search</button></form></section>");
         body.push_str(if searching {
             "<h2>Search results</h2>"
         } else {
@@ -865,7 +863,8 @@ fn recent_entries(connection: &Connection) -> Result<Vec<search::SearchResult>, 
                 &SearchRequest {
                     query: String::new(),
                     entry_type: None,
-                    status: None,
+                    status_include: Vec::new(),
+                    status_exclude: Vec::new(),
                     tag: None,
                     display_id: Some(id),
                     limit: 1,
@@ -1605,6 +1604,84 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> (&str, bool) {
     }
     (&value[..end], true)
 }
+const STATUS_GROUPS: &[(&str, &[EntryStatus])] = &[
+    (
+        "Open",
+        &[
+            EntryStatus::Draft,
+            EntryStatus::Proposed,
+            EntryStatus::Pending,
+            EntryStatus::Approved,
+        ],
+    ),
+    (
+        "Active",
+        &[
+            EntryStatus::Active,
+            EntryStatus::InProgress,
+            EntryStatus::Blocked,
+        ],
+    ),
+    ("Resolved", &[EntryStatus::Accepted, EntryStatus::Completed]),
+    (
+        "Closed",
+        &[
+            EntryStatus::Rejected,
+            EntryStatus::Superseded,
+            EntryStatus::Abandoned,
+            EntryStatus::Archived,
+        ],
+    ),
+];
+
+fn parse_library_status_filters(
+    query: &str,
+) -> Result<(Vec<EntryStatus>, Vec<EntryStatus>), BelayError> {
+    let include = parse_optional_status(query, "status")?;
+    let exclude = parse_optional_status(query, "status_exclude")?;
+    if query_value(query, "status_mode").as_deref() == Some("exclude") && exclude.is_empty() {
+        return Ok((Vec::new(), include));
+    }
+    Ok((include, exclude))
+}
+
+fn parse_optional_status(query: &str, key: &str) -> Result<Vec<EntryStatus>, BelayError> {
+    query_value(query, key)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.parse().map(|status| vec![status]))
+        .transpose()
+        .map(|value| value.unwrap_or_default())
+}
+
+fn grouped_status_select(name: &str, empty_label: &str, selected: Option<&str>) -> String {
+    let mut output = format!(
+        "<select name=\"{}\" aria-label=\"{}\"><option value=\"{}\">{}</option>",
+        escape(name),
+        escape(empty_label),
+        "",
+        escape(empty_label)
+    );
+    for (group, statuses) in STATUS_GROUPS {
+        output.push_str(&format!("<optgroup label=\"{}\">", escape(group)));
+        for status in *statuses {
+            let value = status.to_string();
+            output.push_str(&format!(
+                "<option value=\"{}\"{}>{}</option>",
+                escape(&value),
+                if selected == Some(value.as_str()) {
+                    " selected"
+                } else {
+                    ""
+                },
+                escape(&value)
+            ));
+        }
+        output.push_str("</optgroup>");
+    }
+    output.push_str("</select>");
+    output
+}
+
 fn select(name: &str, selected: Option<&str>, values: &[&str]) -> String {
     let mut output = format!(
         "<select name=\"{}\"><option value=\"\">Any {}</option>",
@@ -1715,6 +1792,63 @@ mod tests {
     }
 
     #[test]
+    fn library_status_filter_lists_every_status_and_honors_exclude_mode() {
+        let temporary = tempdir().expect("create temporary repository");
+        fs::create_dir(temporary.path().join(".git")).expect("create repository marker");
+        let repository = crate::repository::initialize(temporary.path())
+            .expect("initialize")
+            .repository;
+        let proposed = crate::store::create(
+            &repository,
+            EntryType::Decision,
+            "Still proposed".to_owned(),
+            "proposed body".to_owned(),
+        )
+        .expect("create proposed");
+        let accepted = crate::store::create(
+            &repository,
+            EntryType::Decision,
+            "Now accepted".to_owned(),
+            "accepted body".to_owned(),
+        )
+        .expect("create accepted");
+        crate::store::set_status(&repository, &accepted.display_id, EntryStatus::Accepted)
+            .expect("accept");
+        let state = BrowseState::new(repository).expect("browse state");
+
+        let form = response_html(state.library("").expect("empty library"));
+        assert!(!form.contains("name=\"tag\""));
+        assert!(form.contains("name=\"status\""));
+        assert!(form.contains("name=\"status_exclude\""));
+        assert!(form.contains("optgroup label=\"Open\""));
+        assert!(form.contains("optgroup label=\"Active\""));
+        assert!(form.contains("optgroup label=\"Resolved\""));
+        assert!(form.contains("optgroup label=\"Closed\""));
+        for status in EntryStatus::ALL {
+            assert!(
+                form.contains(&format!("value=\"{status}\"")),
+                "missing status option: {status}"
+            );
+        }
+
+        let excluded = response_html(
+            state
+                .library("status_exclude=proposed")
+                .expect("exclude proposed"),
+        );
+        assert!(excluded.contains("Search results"));
+        assert!(excluded.contains("Now accepted"));
+        assert!(!excluded.contains("Still proposed"));
+        assert!(excluded.contains(&accepted.display_id));
+        assert!(!excluded.contains(&proposed.display_id));
+        assert!(excluded.contains("value=\"proposed\" selected"));
+    }
+
+    fn response_html(response: HttpResponse) -> String {
+        String::from_utf8(response.into_reader().into_inner()).expect("utf-8 body")
+    }
+
+    #[test]
     fn snapshot_is_read_only_and_search_matches_the_cli_connection_path() {
         let temporary = tempdir().expect("create temporary repository");
         fs::create_dir(temporary.path().join(".git")).expect("create repository marker");
@@ -1766,7 +1900,8 @@ mod tests {
         let request = SearchRequest {
             query: "browser BM25".to_owned(),
             entry_type: None,
-            status: None,
+            status_include: Vec::new(),
+            status_exclude: Vec::new(),
             tag: None,
             display_id: None,
             limit: 20,
