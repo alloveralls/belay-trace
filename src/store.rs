@@ -33,6 +33,18 @@ pub struct ShownEntry {
     pub entry: Entry,
     pub source_path: String,
     pub inbound_links: Vec<EntryLink>,
+    pub fragment: Option<ShownFragment>,
+}
+
+/// One item of an entry, addressed by a canonical `#sc-nnn` or `#t-nnn`
+/// fragment. `definition` is the line that defines the fragment; `section` is
+/// the body section that carries its detail, which a well-formed entry has and
+/// a bare one legitimately does not.
+#[derive(Debug, Clone)]
+pub struct ShownFragment {
+    pub fragment: String,
+    pub definition: String,
+    pub section: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,11 +276,63 @@ fn create_with_metadata_internal(
     })
 }
 
-pub fn show(repository: &Repository, display_id: &str) -> Result<ShownEntry, BelayError> {
-    parse_display_id(display_id)?;
+pub fn show(repository: &Repository, reference: &str) -> Result<ShownEntry, BelayError> {
+    let reference = parse_entry_reference_id(reference)?;
     let database_path = repository.database_path();
     let connection = database::open(&database_path)?;
-    load_shown_entry(&connection, &database_path, display_id)
+    let mut shown = load_shown_entry(&connection, &database_path, &reference.display_id)?;
+    if let Some(fragment) = reference.fragment.as_deref() {
+        // Reuse link validation so a fragment means the same thing whether it
+        // is being stored or read: canonical, present, and unambiguous. An
+        // invalid fragment fails here rather than degrading to whole-entry
+        // output, which would silently return far more than was asked for.
+        validate_reference_fragment(&connection, &database_path, &reference)?;
+        let internal_id = resolve_internal_id(&connection, &database_path, &reference.display_id)?;
+        let definition = crate::trace_ids::fragment_definition(
+            shown.entry.entry_type,
+            &shown.entry.body,
+            fragment,
+        )
+        .ok_or_else(|| BelayError::Validation {
+            message: format!(
+                "fragment #{fragment} did not resolve to a definition in {}",
+                reference.display_id
+            ),
+        })?;
+        let section = load_fragment_section(&connection, &database_path, internal_id, fragment)?;
+        shown.fragment = Some(ShownFragment {
+            fragment: fragment.to_owned(),
+            definition,
+            section,
+        });
+    }
+    Ok(shown)
+}
+
+/// The body section whose heading matches the fragment ID, read from the chunks
+/// belay already generates, so sectioning here agrees with search and context
+/// rather than reimplementing Markdown parsing.
+fn load_fragment_section(
+    connection: &Connection,
+    database_path: &Path,
+    internal_id: i64,
+    fragment: &str,
+) -> Result<Option<String>, BelayError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT text FROM entry_chunks
+             WHERE entry_id = ?1 AND lower(section) = ?2
+             ORDER BY ordinal",
+        )
+        .map_err(|source| BelayError::sqlite(database_path, source))?;
+    let sections = statement
+        .query_map(params![internal_id, fragment], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|source| BelayError::sqlite(database_path, source))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|source| BelayError::sqlite(database_path, source))?;
+    Ok((!sections.is_empty()).then(|| sections.join("\n\n")))
 }
 
 pub fn link(
@@ -905,6 +969,7 @@ fn load_shown_entry(
         entry,
         source_path,
         inbound_links,
+        fragment: None,
     })
 }
 

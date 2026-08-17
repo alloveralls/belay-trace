@@ -12,6 +12,7 @@ pub mod export;
 pub mod git_provenance;
 pub mod goal;
 pub mod markdown;
+pub mod plan;
 pub mod reconcile;
 pub mod repository;
 pub mod route;

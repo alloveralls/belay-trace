@@ -52,12 +52,15 @@ belay context compile "<task>" --format agent --budget 4000   # once per task, a
 belay context "<task>" --format agent --budget 2500           # fallback if compile is unavailable
 belay search "<query>"                                        # targeted follow-up discovery
 belay show <id>                                               # only when the full entry is needed
+belay show <plan-id>#t-001                                    # one task; prefer over the whole Plan
+belay show <goal-id>#sc-001                                   # one Success Criterion
 belay add <goal|plan|decision|work|review|note> --title "<short-en-slug>"
 belay link <from-id> <to-id> --relation <rel>
     # rel: fulfills | supports | verifies | reviews | implements |
     #      references | supersedes | follows-up | refutes
 belay status <id> <status>
 belay goal lint <goal-id>
+belay plan lint <plan-id>   # Delivery Map and task-section structure
 belay verify record --kind <test|human-approval|...> --verdict <pass|fail> \
   --source "<command-or-url>" --summary "<what passed>" --verifies <id>
 belay sync
@@ -113,6 +116,13 @@ belay route apply <run-id> --approve <exact-preview-hash>
   non-empty; write `None identified` there.
 - Run `belay context compile` once at task start. For anything after that,
   use `belay search`; do not re-compile at checkpoints.
+- Retrieve a fragment, not an entry, when you need one item. `belay show
+  <plan-id>#t-003` returns that task's Delivery Map row and its `## T-003`
+  section; `belay show <plan-id>` returns every task in the Plan. On a ten-task
+  Plan that is roughly an eighth of the output.
+  Cheap retrieval is not licence to skip the Intent Brief: a task read alone
+  loses the Constraints and Non-goals that make it correct, so read those too
+  before acting, and read the whole entry when the work spans tasks.
 
 ## Classify the work
 
@@ -135,6 +145,7 @@ belay route apply <run-id> --approve <exact-preview-hash>
 4. Give tasks stable, document-local IDs using `T-NNN`, starting at `T-001`. Never renumber or reuse an ID. Outside the defining document, use fully qualified references such as `GOAL-...#sc-001` and `PLN-...#t-001`.
 5. Task states are limited to `not-started`, `in-progress`, `blocked`, `implemented`, `verified`, and `dropped`. `implemented` means the change exists; `verified` requires fresh passing Evidence that actually checks the mapped outcome. A test definition is not passing Evidence.
 6. Keep dropped tasks visible and record the reason and approval source.
+7. Give every task a `## T-NNN` body section in the same Plan. The row is the index and the state; the section is what a reader with no prior context acts on, and it is what `belay show <plan-id>#t-nnn` returns. Carry at least Objective, Scope, Steps, Acceptance, and Verification; add whatever else your workflow needs, since `belay plan lint` ignores fields it does not require. Run `belay plan lint <plan-id>` after drafting or materially editing a Plan.
 
 ## Execute
 

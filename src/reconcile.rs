@@ -290,10 +290,11 @@ fn missing_database_dependency_closure(
                 .links
                 .iter()
                 .filter_map(|link| {
-                    if records.contains_key(&link.id) {
+                    let target = link_target_entry(&link.id);
+                    if records.contains_key(target) {
                         None
-                    } else if inventory.entries.contains_key(&link.id) {
-                        Some(Ok(link.id.clone()))
+                    } else if inventory.entries.contains_key(target) {
+                        Some(Ok(target.to_owned()))
                     } else {
                         Some(validation(format!(
                             "entry {} links to missing entry {}",
@@ -1517,7 +1518,7 @@ fn cleanup_orphaned_entry_rows(
 fn validate_link_targets(inventory: &MirrorInventory) -> Result<(), BelayError> {
     for mirror in inventory.entries.values() {
         for link in &mirror.entry.links {
-            if !inventory.entries.contains_key(&link.id) {
+            if !inventory.entries.contains_key(link_target_entry(&link.id)) {
                 return validation(format!(
                     "entry {} links to missing entry {}",
                     mirror.entry.display_id, link.id
@@ -1526,6 +1527,14 @@ fn validate_link_targets(inventory: &MirrorInventory) -> Result<(), BelayError> 
         }
     }
     Ok(())
+}
+
+/// The entry part of a link target. Entry inventories are keyed by bare display
+/// ID, but `docs/id-reference-standard.md` has links carry a `#sc-nnn` or
+/// `#t-nnn` fragment, so the fragment must come off before the lookup. Whether
+/// the fragment itself resolves is validated when the link is stored.
+pub(crate) fn link_target_entry(id: &str) -> &str {
+    id.split_once('#').map_or(id, |(entry, _)| entry)
 }
 
 fn unique_sibling(path: &Path, label: &str) -> PathBuf {
