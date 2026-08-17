@@ -13,6 +13,7 @@ metadata: {}
 ---
 
 ## Current State
+
 - Fact: The handoff snapshot contains the prior 12 changed paths plus this Note.
 - Fact: Local bookmark `agent/configure-agent-models` points to commit `7adea6cb`.
 - Fact: GitHub PR #24 is OPEN and Draft; checks are passing and review is required.
