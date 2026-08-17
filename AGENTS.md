@@ -44,7 +44,6 @@ Stop after the same failure occurs three times, or when outcome, ownership,
 scope, or verification becomes materially ambiguous.
 
 <!-- belay-trace:start -->
-
 ## belay-trace
 
 For Tier 2 and Tier 3 work, follow the repository-installed
