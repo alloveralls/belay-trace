@@ -5,8 +5,8 @@ type: review
 title: Review Belay Route goal draft
 status: completed
 created_at: 2026-07-26T10:11:57+09:00
-updated_at: 2026-07-26T10:12:23+09:00
-revision: 5
+updated_at: 2026-08-17T18:48:29+09:00
+revision: 1
 tags: []
 links:
 - relation: references

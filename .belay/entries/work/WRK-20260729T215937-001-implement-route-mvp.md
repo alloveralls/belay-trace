@@ -5,8 +5,8 @@ type: work
 title: implement-route-mvp
 status: completed
 created_at: 2026-07-29T21:59:37+09:00
-updated_at: 2026-07-30T06:19:57+09:00
-revision: 10
+updated_at: 2026-08-17T18:48:29+09:00
+revision: 1
 tags: []
 links:
   - relation: implements

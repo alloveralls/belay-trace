@@ -5,8 +5,8 @@ type: goal
 title: Prepare a validated 0.3.2 patch release
 status: completed
 created_at: 2026-07-25T22:01:02+09:00
-updated_at: 2026-07-27T20:14:27+09:00
-revision: 8
+updated_at: 2026-08-17T18:48:29+09:00
+revision: 1
 tags: []
 links: []
 metadata: {}

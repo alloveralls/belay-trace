@@ -5,8 +5,8 @@ type: work
 title: Improve Explore graph spacing
 status: completed
 created_at: 2026-07-25T21:20:12+09:00
-updated_at: 2026-07-25T21:23:57+09:00
-revision: 6
+updated_at: 2026-08-17T18:48:29+09:00
+revision: 1
 tags: []
 links:
 - relation: references

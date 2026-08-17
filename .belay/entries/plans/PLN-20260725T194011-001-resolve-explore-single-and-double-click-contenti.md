@@ -5,8 +5,8 @@ type: plan
 title: Resolve Explore single and double click contention
 status: completed
 created_at: 2026-07-25T19:40:11+09:00
-updated_at: 2026-07-27T20:14:27+09:00
-revision: 13
+updated_at: 2026-08-17T18:48:29+09:00
+revision: 1
 tags: []
 links:
   - relation: references

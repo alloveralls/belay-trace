@@ -5,8 +5,8 @@ type: plan
 title: Make Belay agent guidance operational and observable
 status: completed
 created_at: 2026-07-26T11:35:22+09:00
-updated_at: 2026-07-27T19:16:15+09:00
-revision: 17
+updated_at: 2026-08-17T18:48:29+09:00
+revision: 1
 tags: []
 links:
 - relation: references

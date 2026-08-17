@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -1041,6 +1041,468 @@ fn invalid_add_does_not_allocate_or_write() {
     assert_eq!(mirror_count, 1);
 }
 
+const CONFORMING_PLAN: &str = concat!(
+    "## Delivery Map\n\n",
+    "| ID | Goal item | Outcome / Task | State |\n",
+    "| --- | --- | --- | --- |\n",
+    "| T-001 | SC-001 | Do the thing | verified |\n\n",
+    "## T-001\n\n",
+    "- **Objective**: do the thing.\n",
+    "- **Scope**: in — one file. Out — everything else.\n",
+    "- **Steps**:\n  1. Do it.\n",
+    "- **Acceptance**: SC-001 holds.\n",
+    "- **Verification**: `cargo test`.\n",
+);
+
+fn add_plan(temporary: &tempfile::TempDir, title: &str, body: &str) -> String {
+    created_id(
+        &belay()
+            .args(["add", "plan", "--title", title, "--body", body])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add plan"),
+    )
+}
+
+fn plan_lint(temporary: &tempfile::TempDir, args: &[&str]) -> std::process::Output {
+    let mut command = belay();
+    command.arg("plan").arg("lint");
+    for argument in args {
+        command.arg(argument);
+    }
+    command
+        .current_dir(temporary.path())
+        .output()
+        .expect("plan lint")
+}
+
+/// Characterizes what several processes writing at once actually do, so a
+/// consumer can cite a behavior instead of guessing one. `create` opens an
+/// IMMEDIATE transaction, writes the Markdown mirror while still holding that
+/// write lock, and only then commits, so writers serialize rather than
+/// interleave. This test is the evidence for that claim; if it starts failing,
+/// the documented guarantee in `docs/id-reference-standard.md` is wrong.
+#[test]
+fn concurrent_writers_serialize_without_losing_entries_or_drifting() {
+    let temporary = initialize_repository();
+    let writers = 8;
+
+    let children = (0..writers)
+        .map(|index| {
+            belay()
+                .args([
+                    "add",
+                    "note",
+                    "--title",
+                    &format!("concurrent writer {index}"),
+                    "--body",
+                    "Written concurrently.",
+                ])
+                .current_dir(temporary.path())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn concurrent writer")
+        })
+        .collect::<Vec<_>>();
+    let outcomes = children
+        .into_iter()
+        .map(|child| child.wait_with_output().expect("writer finished"))
+        .collect::<Vec<_>>();
+
+    for outcome in &outcomes {
+        assert!(
+            outcome.status.success(),
+            "a concurrent writer must block on the lock, not fail: {outcome:?}"
+        );
+    }
+
+    let ids = outcomes.iter().map(created_id).collect::<BTreeSet<_>>();
+    assert_eq!(
+        ids.len(),
+        writers,
+        "display IDs are allocated inside the transaction, so they must not collide"
+    );
+
+    let mirrored = fs::read_dir(temporary.path().join(".belay/entries/notes"))
+        .expect("notes directory")
+        .filter_map(Result::ok)
+        .count();
+    assert_eq!(
+        mirrored, writers,
+        "every committed entry must have a mirror"
+    );
+
+    let doctor = belay()
+        .arg("doctor")
+        .current_dir(temporary.path())
+        .output()
+        .expect("doctor");
+    let report = String::from_utf8_lossy(&doctor.stdout).to_string();
+    assert!(
+        report.contains("SQLite/Markdown drift: ok"),
+        "concurrent writes must leave SQLite and the mirror in agreement: {report}"
+    );
+}
+
+/// The `add` case has writers touching different rows. This one has them
+/// contending for the same one, which is where a lost update would show.
+#[test]
+fn concurrent_mutations_of_one_entry_leave_a_consistent_result() {
+    let temporary = initialize_repository();
+    let target = created_id(
+        &belay()
+            .args(["add", "decision", "--title", "Contended", "--body", "Body"])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add decision"),
+    );
+    let sources = (0..4)
+        .map(|index| {
+            created_id(
+                &belay()
+                    .args([
+                        "add",
+                        "work",
+                        "--title",
+                        &format!("linker {index}"),
+                        "--body",
+                        "Body",
+                    ])
+                    .current_dir(temporary.path())
+                    .output()
+                    .expect("add work"),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let mut children = sources
+        .iter()
+        .map(|source| {
+            belay()
+                .args(["link", source, &target, "--relation", "supports"])
+                .current_dir(temporary.path())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn linker")
+        })
+        .collect::<Vec<_>>();
+    children.push(
+        belay()
+            .args(["status", &target, "accepted"])
+            .current_dir(temporary.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn status change"),
+    );
+    for child in children {
+        let outcome = child.wait_with_output().expect("mutation finished");
+        assert!(
+            outcome.status.success(),
+            "a contended mutation must serialize, not fail: {outcome:?}"
+        );
+    }
+
+    let shown = belay()
+        .args(["show", &target])
+        .current_dir(temporary.path())
+        .output()
+        .expect("show target");
+    let stdout = String::from_utf8(shown.stdout).expect("stdout");
+    assert!(stdout.contains("Status: accepted"), "{stdout}");
+    for source in &sources {
+        assert!(
+            stdout.contains(source.as_str()),
+            "no link may be lost to a concurrent write: {stdout}"
+        );
+    }
+
+    let doctor = belay()
+        .arg("doctor")
+        .current_dir(temporary.path())
+        .output()
+        .expect("doctor");
+    let report = String::from_utf8_lossy(&doctor.stdout).to_string();
+    assert!(
+        report.contains("SQLite/Markdown drift: ok"),
+        "contended writes must leave SQLite and the mirror in agreement: {report}"
+    );
+}
+
+#[test]
+fn sync_accepts_a_link_that_targets_a_task_fragment() {
+    // `docs/id-reference-standard.md` §3 has Work link to a Plan task with
+    // `implements`, so the documented usage must survive a sync.
+    let temporary = initialize_repository();
+    let plan = add_plan(&temporary, "Deliver sync", CONFORMING_PLAN);
+    let work = created_id(
+        &belay()
+            .args(["add", "work", "--title", "Do it", "--body", "Work body"])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add work"),
+    );
+    let linked = belay()
+        .args([
+            "link",
+            &work,
+            &format!("{plan}#t-001"),
+            "--relation",
+            "implements",
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("link to fragment");
+    assert!(linked.status.success(), "{linked:?}");
+
+    let synced = belay()
+        .arg("sync")
+        .current_dir(temporary.path())
+        .output()
+        .expect("sync");
+    let stderr = String::from_utf8_lossy(&synced.stderr);
+    assert!(
+        synced.status.success() && !stderr.contains("links to missing entry"),
+        "sync must not treat a fragment target as a missing entry: {synced:?}"
+    );
+}
+
+#[test]
+fn plan_lint_passes_a_conforming_plan_and_tolerates_extra_fields() {
+    let temporary = initialize_repository();
+    let extended = format!("{CONFORMING_PLAN}- **Difficulty**: medium.\n- **Owner**: someone.\n");
+    let plan = add_plan(&temporary, "Deliver sync", &extended);
+
+    let output = plan_lint(&temporary, &[&plan]);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout");
+    assert!(stdout.contains("No deterministic findings"), "{stdout}");
+    // An extension field is a consumer's business, not a finding.
+    assert!(!stdout.contains("Difficulty"), "{stdout}");
+}
+
+#[test]
+fn plan_lint_reports_a_task_row_no_section_explains() {
+    let temporary = initialize_repository();
+    let body = concat!(
+        "## Delivery Map\n\n",
+        "| ID | Goal item | Outcome / Task | State |\n",
+        "| --- | --- | --- | --- |\n",
+        "| T-001 | SC-001 | Explained | verified |\n",
+        "| T-002 | SC-001 | Unexplained | not-started |\n\n",
+        "## T-001\n\n",
+        "- **Objective**: do the thing.\n",
+        "- **Scope**: in — one file.\n",
+        "- **Steps**:\n  1. Do it.\n",
+        "- **Acceptance**: SC-001 holds.\n",
+        "- **Verification**: `cargo test`.\n",
+    );
+    let plan = add_plan(&temporary, "Partly mapped", body);
+
+    let stdout = String::from_utf8(plan_lint(&temporary, &[&plan]).stdout).expect("stdout");
+    assert!(
+        stdout.contains("Delivery Map T-002: no `## T-002` section"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("T-001: no `## T-001`"), "{stdout}");
+}
+
+#[test]
+fn plan_lint_reports_missing_baseline_fields_and_unknown_states() {
+    let temporary = initialize_repository();
+    let body = concat!(
+        "## Delivery Map\n\n",
+        "| ID | Goal item | Outcome / Task | State |\n",
+        "| --- | --- | --- | --- |\n",
+        "| T-001 | SC-001 | Thin section | almost-done |\n\n",
+        "## T-001\n\n",
+        "- **Objective**: do the thing.\n",
+    );
+    let plan = add_plan(&temporary, "Thin plan", body);
+
+    let stdout = String::from_utf8(plan_lint(&temporary, &[&plan]).stdout).expect("stdout");
+    for field in ["Scope", "Steps", "Acceptance", "Verification"] {
+        assert!(
+            stdout.contains(&format!("T-001 {field}: task section is missing")),
+            "{field} must be reported: {stdout}"
+        );
+    }
+    assert!(!stdout.contains("T-001 Objective:"), "{stdout}");
+    assert!(
+        stdout.contains("state \"almost-done\" is not one of"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn plan_lint_skips_a_plan_with_no_delivery_map() {
+    let temporary = initialize_repository();
+    let plan = add_plan(
+        &temporary,
+        "Prose only",
+        "## Intent Brief\n\n- Just prose.\n",
+    );
+
+    let output = plan_lint(&temporary, &[&plan]);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout");
+    assert!(stdout.contains("structural checks skipped"), "{stdout}");
+    assert!(!stdout.contains("Checklist:"), "{stdout}");
+}
+
+#[test]
+fn plan_lint_matches_goal_lint_interface_shape() {
+    let temporary = initialize_repository();
+    let good = add_plan(&temporary, "Conforming", CONFORMING_PLAN);
+    let bad = add_plan(
+        &temporary,
+        "Bare",
+        "## Delivery Map\n\n| ID | Goal item | State |\n| --- | --- | --- |\n| T-001 | SC-001 | verified |\n",
+    );
+
+    let all = plan_lint(&temporary, &["--all"]);
+    assert!(all.status.success(), "{all:?}");
+    let stdout = String::from_utf8(all.stdout).expect("stdout");
+    assert!(stdout.contains(&good) && stdout.contains(&bad), "{stdout}");
+
+    let json = plan_lint(&temporary, &["--all", "--format", "json"]);
+    assert!(json.status.success(), "{json:?}");
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&json.stdout).expect("plan lint json must parse");
+    let reports = parsed.as_array().expect("array of reports");
+    assert_eq!(reports.len(), 2);
+    assert!(reports[0].get("plan_id").is_some());
+    assert!(reports[0].get("checklist_total").is_some());
+
+    // Findings alone do not fail; --strict is what turns them into an error.
+    let lenient = plan_lint(&temporary, &[&bad]);
+    assert!(lenient.status.success(), "{lenient:?}");
+    let strict = plan_lint(&temporary, &[&bad, "--strict"]);
+    assert_eq!(strict.status.code(), Some(4), "{strict:?}");
+
+    let both = plan_lint(&temporary, &[&good, "--all"]);
+    assert_eq!(both.status.code(), Some(4), "{both:?}");
+}
+
+#[test]
+fn show_with_a_fragment_returns_one_task_instead_of_the_entry() {
+    let temporary = initialize_repository();
+    let body = concat!(
+        "## Delivery Map\n\n",
+        "| ID | Outcome / Task | State |\n",
+        "| --- | --- | --- |\n",
+        "| T-001 | Documented task | not-started |\n",
+        "| T-002 | Bare row with no section | not-started |\n\n",
+        "## T-001\n\n",
+        "- **Objective**: the detail a worker needs.\n",
+    );
+    let plan = created_id(
+        &belay()
+            .args(["add", "plan", "--title", "Deliver sync", "--body", body])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add plan"),
+    );
+
+    let scoped = belay()
+        .args(["show", &format!("{plan}#t-001")])
+        .current_dir(temporary.path())
+        .output()
+        .expect("show fragment");
+    assert!(scoped.status.success(), "{scoped:?}");
+    let scoped = String::from_utf8(scoped.stdout).expect("stdout");
+    assert!(scoped.contains(&format!("ID: {plan}#t-001")), "{scoped}");
+    assert!(scoped.contains("| T-001 | Documented task | not-started |"));
+    assert!(scoped.contains("the detail a worker needs"));
+    // The point of the fragment is that the rest of the entry stays unread.
+    assert!(!scoped.contains("Bare row with no section"), "{scoped}");
+    assert!(!scoped.contains("Outbound Links:"), "{scoped}");
+
+    let whole = belay()
+        .args(["show", &plan])
+        .current_dir(temporary.path())
+        .output()
+        .expect("show entry");
+    let whole = String::from_utf8(whole.stdout).expect("stdout");
+    assert!(whole.contains("Bare row with no section"));
+    assert!(whole.contains("Outbound Links:"));
+    assert!(
+        scoped.len() < whole.len(),
+        "fragment output must be smaller than the entry: {} vs {}",
+        scoped.len(),
+        whole.len()
+    );
+}
+
+#[test]
+fn show_reports_a_resolvable_fragment_that_has_no_body_section() {
+    let temporary = initialize_repository();
+    let body = concat!(
+        "## Delivery Map\n\n",
+        "| ID | Outcome / Task | State |\n",
+        "| --- | --- | --- |\n",
+        "| T-001 | Bare row | not-started |\n",
+    );
+    let plan = created_id(
+        &belay()
+            .args(["add", "plan", "--title", "Bare map", "--body", body])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add plan"),
+    );
+
+    let output = belay()
+        .args(["show", &format!("{plan}#t-001")])
+        .current_dir(temporary.path())
+        .output()
+        .expect("show fragment");
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout");
+    assert!(
+        stdout.contains("| T-001 | Bare row | not-started |"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Section: none"), "{stdout}");
+}
+
+#[test]
+fn show_rejects_a_fragment_instead_of_falling_back_to_the_entry() {
+    let temporary = initialize_repository();
+    let body = concat!(
+        "## Delivery Map\n\n",
+        "| ID | Outcome / Task | State |\n",
+        "| --- | --- | --- |\n",
+        "| T-001 | Documented task | not-started |\n",
+    );
+    let plan = created_id(
+        &belay()
+            .args(["add", "plan", "--title", "Deliver sync", "--body", body])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add plan"),
+    );
+
+    for fragment in ["t-099", "sc-001", "objective", "t-1"] {
+        let output = belay()
+            .args(["show", &format!("{plan}#{fragment}")])
+            .current_dir(temporary.path())
+            .output()
+            .expect("show fragment");
+        assert_eq!(
+            output.status.code(),
+            Some(4),
+            "fragment {fragment} must fail: {output:?}"
+        );
+        let stdout = String::from_utf8(output.stdout).expect("stdout");
+        assert!(
+            !stdout.contains("Documented task"),
+            "fragment {fragment} must not fall back to the entry: {stdout}"
+        );
+    }
+}
+
 #[test]
 fn show_link_and_status_use_display_ids_and_keep_mirror_in_sync() {
     let temporary = initialize_repository();
@@ -1587,6 +2049,94 @@ fn search_supports_exact_id_structured_filters_and_bm25_deduplication() {
     );
     assert!(!keyword_stdout.contains(&unrelated));
     assert!(!keyword_stdout.contains("entry_id"));
+}
+
+#[test]
+fn search_supports_repeated_status_include_and_exclude() {
+    let temporary = initialize_repository();
+    let proposed = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Proposed storage",
+                "--body",
+                "keep proposed",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add proposed"),
+    );
+    let accepted = created_id(
+        &belay()
+            .args([
+                "add",
+                "decision",
+                "--title",
+                "Accepted storage",
+                "--body",
+                "keep accepted",
+            ])
+            .current_dir(temporary.path())
+            .output()
+            .expect("add accepted"),
+    );
+    let status = belay()
+        .args(["status", &accepted, "accepted"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("accept decision");
+    assert!(status.status.success(), "{status:?}");
+
+    let help = belay()
+        .args(["search", "--help"])
+        .output()
+        .expect("search help");
+    let help_stdout = String::from_utf8(help.stdout).expect("help stdout");
+    assert!(help_stdout.contains("--exclude-status"));
+    assert!(help_stdout.contains("--status draft --status active"));
+
+    let included = belay()
+        .args(["search", "--type", "decision", "--status", "accepted"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("include accepted");
+    assert!(included.status.success(), "{included:?}");
+    let included_stdout = String::from_utf8(included.stdout).expect("include stdout");
+    assert!(included_stdout.contains("Status include: accepted"));
+    assert!(included_stdout.contains(&accepted));
+    assert!(!included_stdout.contains(&proposed));
+
+    let excluded = belay()
+        .args([
+            "search",
+            "--type",
+            "decision",
+            "--exclude-status",
+            "proposed",
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("exclude proposed");
+    assert!(excluded.status.success(), "{excluded:?}");
+    let excluded_stdout = String::from_utf8(excluded.stdout).expect("exclude stdout");
+    assert!(excluded_stdout.contains("Status exclude: proposed"));
+    assert!(excluded_stdout.contains(&accepted));
+    assert!(!excluded_stdout.contains(&proposed));
+
+    let overlap = belay()
+        .args([
+            "search",
+            "--status",
+            "accepted",
+            "--exclude-status",
+            "accepted",
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("overlap");
+    assert_eq!(overlap.status.code(), Some(4));
 }
 
 #[test]

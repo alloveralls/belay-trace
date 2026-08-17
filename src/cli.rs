@@ -16,6 +16,7 @@ use crate::error::BelayError;
 use crate::evidence;
 use crate::export;
 use crate::goal;
+use crate::plan;
 use crate::reconcile;
 use crate::repository;
 use crate::route;
@@ -139,14 +140,22 @@ const SHOW_AFTER_HELP: &str = r#"Behavior and Side Effects:
   Displays one complete entry, its managed source path, and inbound and outbound links
   using display IDs. It does not change repository state.
 
+  Appending a canonical fragment displays only that item: the line defining it
+  and the body section headed with its ID. Use it to read one Success Criterion
+  or one Delivery Map task without paying for the whole entry. A fragment that
+  is not canonical, not present, or ambiguous fails rather than falling back to
+  the complete entry.
+
 Examples:
   belay show DEC-20260606T115000-001-sqlite
+  belay show PLN-20260723T120100-001-deliver-safe-sync#t-001
+  belay show GOAL-20260723T120000-001-safe-sync#sc-001
 
 Exit Status:
   0  Entry displayed
   2  Invalid invocation
   3  Repository not initialized
-  4  Invalid display ID or entry not found
+  4  Invalid display ID, invalid fragment, or entry not found
   6  Storage failure
 
 Related Commands:
@@ -160,6 +169,8 @@ const SEARCH_AFTER_HELP: &str = r#"Behavior and Side Effects:
 Examples:
   belay search "sqlite migration"
   belay search --type decision --status accepted
+  belay search --status draft --status active
+  belay search --exclude-status completed --exclude-status abandoned
   belay search --id DEC-20260606T115000-001-sqlite
 
 Exit Status:
@@ -215,6 +226,28 @@ Exit Status:
 
 Related Commands:
   `belay add goal`, `belay context compile`, and `belay coverage`."#;
+
+const PLAN_AFTER_HELP: &str = r#"Behavior and Side Effects:
+  Reviews Plan entries without calling an LLM. Lint performs deterministic
+  structural checks on the Delivery Map: task rows exist, task IDs are canonical
+  and unique, states come from the fixed set, every task ID has a `## T-NNN`
+  section, and that section carries the baseline fields. Fields belay does not
+  require are ignored, so a consumer may extend a task section. A Plan with no
+  Delivery Map is skipped rather than failed.
+
+Examples:
+  belay plan lint PLN-20260701T090500-001-deliver-sync
+  belay plan lint --all --format json
+
+Exit Status:
+  0  Plan command completed, including non-strict lint findings
+  2  Invalid invocation
+  3  Repository not initialized
+  4  Invalid plan, strict lint failure, or output validation failure
+  6  Storage failure
+
+Related Commands:
+  `belay goal lint`, `belay show <id>#t-NNN`, and `belay coverage`."#;
 
 const VERIFY_AFTER_HELP: &str = r#"Behavior and Side Effects:
   Records append-only Evidence in .belay/evidence/*.ndjson and indexes it in SQLite.
@@ -443,7 +476,7 @@ enum Command {
         about = "Display a trace entry",
         after_help = SHOW_AFTER_HELP
     )]
-    Show(EntryIdArgs),
+    Show(ShowArgs),
 
     #[command(
         about = "Search trace entries",
@@ -474,6 +507,12 @@ enum Command {
         after_help = GOAL_AFTER_HELP
     )]
     Goal(GoalArgs),
+
+    #[command(
+        about = "Review Plan entries",
+        after_help = PLAN_AFTER_HELP
+    )]
+    Plan(PlanArgs),
 
     #[command(
         about = "Record and inspect verification evidence",
@@ -590,6 +629,12 @@ struct EntryIdArgs {
 }
 
 #[derive(Debug, Args)]
+struct ShowArgs {
+    /// Entry display ID, optionally with a canonical `#sc-NNN` or `#t-NNN` fragment.
+    id: String,
+}
+
+#[derive(Debug, Args)]
 struct SearchArgs {
     /// Plain-text keyword query or exact display ID.
     query: Option<String>,
@@ -598,9 +643,13 @@ struct SearchArgs {
     #[arg(long = "type", value_name = "TYPE")]
     entry_type: Option<String>,
 
-    /// Filter by type-specific status.
-    #[arg(long)]
-    status: Option<String>,
+    /// Include entries with this status. Repeatable.
+    #[arg(long, value_name = "STATUS")]
+    status: Vec<String>,
+
+    /// Exclude entries with this status. Repeatable.
+    #[arg(long = "exclude-status", value_name = "STATUS")]
+    exclude_status: Vec<String>,
 
     /// Filter by an exact tag.
     #[arg(long)]
@@ -729,6 +778,31 @@ struct GoalArgs {
 enum GoalCommand {
     Lint(GoalLintArgs),
     Improve(GoalImproveArgs),
+}
+
+#[derive(Debug, Args)]
+struct PlanArgs {
+    #[command(subcommand)]
+    command: PlanCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum PlanCommand {
+    Lint(PlanLintArgs),
+}
+
+#[derive(Debug, Args)]
+struct PlanLintArgs {
+    id: Option<String>,
+
+    #[arg(long)]
+    all: bool,
+
+    #[arg(long, value_enum, default_value_t = CliReportFormat::Human)]
+    format: CliReportFormat,
+
+    #[arg(long)]
+    strict: bool,
 }
 
 #[derive(Debug, Args)]
@@ -984,15 +1058,21 @@ fn execute(cli: Cli, current_dir: &Path) -> Result<(), BelayError> {
                 .as_deref()
                 .map(EntryType::from_str)
                 .transpose()?;
-            let status = arguments
+            let status_include = arguments
                 .status
-                .as_deref()
-                .map(EntryStatus::from_str)
-                .transpose()?;
+                .into_iter()
+                .map(|value| EntryStatus::from_str(&value))
+                .collect::<Result<Vec<_>, _>>()?;
+            let status_exclude = arguments
+                .exclude_status
+                .into_iter()
+                .map(|value| EntryStatus::from_str(&value))
+                .collect::<Result<Vec<_>, _>>()?;
             let request = SearchRequest {
                 query: arguments.query.unwrap_or_default(),
                 entry_type,
-                status,
+                status_include,
+                status_exclude,
                 tag: arguments.tag,
                 display_id: arguments.id,
                 limit: arguments.limit,
@@ -1186,6 +1266,38 @@ fn execute(cli: Cli, current_dir: &Path) -> Result<(), BelayError> {
                 }
             }
         }
+        Command::Plan(arguments) => {
+            let repository = repository::discover(current_dir)?;
+            match arguments.command {
+                PlanCommand::Lint(arguments) => {
+                    if arguments.all && arguments.id.is_some() {
+                        return Err(BelayError::Validation {
+                            message:
+                                "`belay plan lint` accepts either a plan ID or --all, not both"
+                                    .to_owned(),
+                        });
+                    }
+                    let reports = plan::lint(&repository, arguments.id.as_deref(), arguments.all)?;
+                    let format = match arguments.format {
+                        CliReportFormat::Human => plan::PlanLintFormat::Human,
+                        CliReportFormat::Json => plan::PlanLintFormat::Json,
+                    };
+                    print!("{}", plan::render_lint(&reports, format)?);
+                    if arguments.strict
+                        && reports
+                            .iter()
+                            .any(plan::PlanLintReport::has_strict_findings)
+                    {
+                        Err(BelayError::Validation {
+                            message: "plan lint strict mode found deterministic findings"
+                                .to_owned(),
+                        })
+                    } else {
+                        Ok(())
+                    }
+                }
+            }
+        }
         Command::Verify(arguments) => {
             let repository = repository::discover(current_dir)?;
             match arguments.command {
@@ -1371,8 +1483,27 @@ fn print_search_results(request: &SearchRequest, results: &[search::SearchResult
     if let Some(entry_type) = request.entry_type {
         println!("Type: {entry_type}");
     }
-    if let Some(status) = request.status {
-        println!("Status: {status}");
+    if !request.status_include.is_empty() {
+        println!(
+            "Status include: {}",
+            request
+                .status_include
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if !request.status_exclude.is_empty() {
+        println!(
+            "Status exclude: {}",
+            request
+                .status_exclude
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
     if let Some(tag) = &request.tag {
         println!("Tag: {tag}");
@@ -1462,6 +1593,10 @@ fn parse_fail_under(value: &str) -> Result<(String, usize), BelayError> {
 
 fn print_shown_entry(shown: &store::ShownEntry) {
     let entry = &shown.entry;
+    if let Some(fragment) = &shown.fragment {
+        print_shown_fragment(shown, fragment);
+        return;
+    }
     println!("ID: {}", entry.display_id);
     println!("Type: {}", entry.entry_type);
     println!("Title: {}", entry.title);
@@ -1495,6 +1630,30 @@ fn print_shown_entry(shown: &store::ShownEntry) {
     }
     println!("Body:");
     println!("{}", entry.body);
+}
+
+/// One item's view. Entry-scoped fields that would reintroduce the cost the
+/// fragment exists to avoid — tags, metadata, links, and the full body — are
+/// left out; `Source` stays so a reader can still fall back to the file.
+fn print_shown_fragment(shown: &store::ShownEntry, fragment: &store::ShownFragment) {
+    let entry = &shown.entry;
+    println!("ID: {}#{}", entry.display_id, fragment.fragment);
+    println!("Type: {}", entry.entry_type);
+    println!("Title: {}", entry.title);
+    println!("Status: {}", entry.status);
+    println!("Source: {}", shown.source_path);
+    println!("Definition:");
+    println!("{}", fragment.definition);
+    match &fragment.section {
+        Some(section) => {
+            println!("Section:");
+            println!("{section}");
+        }
+        None => println!(
+            "Section: none (no body section is headed {})",
+            fragment.fragment.to_ascii_uppercase()
+        ),
+    }
 }
 
 #[cfg(test)]

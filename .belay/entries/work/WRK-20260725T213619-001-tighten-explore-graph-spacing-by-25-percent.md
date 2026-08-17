@@ -5,8 +5,8 @@ type: work
 title: Tighten Explore graph spacing by 25 percent
 status: completed
 created_at: 2026-07-25T21:36:19+09:00
-updated_at: 2026-07-25T21:38:07+09:00
-revision: 3
+updated_at: 2026-08-17T18:48:29+09:00
+revision: 1
 tags: []
 links:
 - relation: follows-up

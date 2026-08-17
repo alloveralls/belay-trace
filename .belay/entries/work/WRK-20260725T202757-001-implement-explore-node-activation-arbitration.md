@@ -5,8 +5,8 @@ type: work
 title: Implement Explore node activation arbitration
 status: completed
 created_at: 2026-07-25T20:27:57+09:00
-updated_at: 2026-07-27T20:14:27+09:00
-revision: 11
+updated_at: 2026-08-17T18:48:29+09:00
+revision: 1
 tags: []
 links:
 - relation: implements

@@ -147,6 +147,8 @@ FTS5/BM25 keyword results:
 ```sh
 belay search "sqlite migration"
 belay search --type decision --status accepted
+belay search --status draft --status active
+belay search --exclude-status completed --exclude-status abandoned
 belay search --tag release
 belay search --id DEC-20260607T090000-001-use-sqlite
 ```

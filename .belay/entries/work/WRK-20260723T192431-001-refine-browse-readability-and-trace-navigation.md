@@ -5,8 +5,8 @@ type: work
 title: Refine Browse readability and trace navigation
 status: completed
 created_at: 2026-07-23T19:24:31+09:00
-updated_at: 2026-07-23T20:01:10+09:00
-revision: 4
+updated_at: 2026-08-17T18:48:29+09:00
+revision: 1
 tags: []
 links:
 - relation: implements

@@ -54,7 +54,21 @@ main { max-width: 1360px; margin: 0 auto; padding: 1.7rem; }
 .status-blocked, .verdict-fail, .verdict-refuted, .relation-refutes { color: #ffb2b8; border-color: #ef6b73; background: rgba(239, 107, 115, .14); }
 .status-archived, .status-dropped, .freshness-stale { color: #c0c6d0; border-color: #727d8e; background: rgba(114, 125, 142, .14); }
 .relation-supports, .relation-implements, .relation-fulfills, .relation-verifies { color: #a9dcff; border-color: #4d8fca; background: rgba(77, 143, 202, .14); }
-form.filters { display: grid; grid-template-columns: minmax(14rem, 1fr) repeat(4, auto); gap: .65rem; }
+form.filters { display: grid; grid-template-columns: minmax(14rem, 1fr) auto auto auto auto; gap: .65rem; align-items: stretch; }
+form.filters > input,
+form.filters > select,
+form.filters > button {
+  min-height: 2.5rem;
+  height: 2.5rem;
+  line-height: 1.25;
+}
+form.filters > select {
+  appearance: none;
+  padding-right: 1.85rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23aeb9cb' d='M2.4 4.2 6 8.1l3.6-3.9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right .6rem center;
+}
 input, select, button { color: var(--text); background: #111824; font: inherit; padding: .5rem .65rem; border-radius: .4rem; border: 1px solid #64718a; }
 button { cursor: pointer; }
 button:hover { background: #253146; }

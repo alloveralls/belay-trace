@@ -1,14 +1,33 @@
-model = "gpt-5.6-sol"
-model_reasoning_effort = "low"
+# The workspace is the boundary. Codex's own sandbox enforces it: inside the
+# workspace the agent reads and writes freely, and anything outside is escalated
+# to the human through `approval_policy`.
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+allow_login_shell = false
 
-[agents.implementer]
-description = "Approved bounded Tier 2 implementation"
-config_file = "./agents/implementer.toml"
+# Deliberately omit top-level model/model_reasoning_effort and subagent defaults.
+# This project config does not override the active root selection. Confirm the
+# effective design/orchestration model and effort in /status after installation.
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 3
 
-[agents.reviewer]
-description = "Independent bounded Tier 2 review"
-config_file = "./agents/reviewer.toml"
+[sandbox_workspace_write]
+# Package managers, VCS remotes, and API calls are ordinary development work.
+# Confining them to the sandbox is the control; blocking them was not.
+network_access = true
+# $TMPDIR is part of the workspace, bare /tmp is not, which matches the
+# sandbox-writable temp directory Claude Code exposes as $TMPDIR.
+exclude_tmpdir_env_var = false
+exclude_slash_tmp = true
 
-[agents.high_risk_reviewer]
-description = "Independent Tier 3 and high-risk review"
-config_file = "./agents/high-risk-reviewer.toml"
+# The sandbox cannot protect the files that configure it, and structured write
+# tools never reach the shell sandbox at all. That is the whole job of this hook.
+[[hooks.PreToolUse]]
+matcher = "^(Bash|apply_patch|Edit|Write)$"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = '/usr/bin/python3 "$(git rev-parse --show-toplevel)/.agent-safety/safe-autonomy/scripts/guard_tool.py"'
+timeout = 10
+statusMessage = "Checking the workspace boundary"

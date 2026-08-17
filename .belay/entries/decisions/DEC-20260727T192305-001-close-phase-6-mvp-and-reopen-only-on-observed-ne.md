@@ -5,8 +5,8 @@ type: decision
 title: Close Phase 6 MVP and reopen only on observed need
 status: accepted
 created_at: 2026-07-27T19:23:05+09:00
-updated_at: 2026-07-27T19:23:21+09:00
-revision: 5
+updated_at: 2026-08-17T18:48:29+09:00
+revision: 1
 tags: []
 links:
 - relation: references

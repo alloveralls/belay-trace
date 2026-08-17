@@ -71,7 +71,8 @@ pub fn generate(
         &SearchRequest {
             query: task.to_owned(),
             entry_type: None,
-            status: None,
+            status_include: Vec::new(),
+            status_exclude: Vec::new(),
             tag: None,
             display_id: None,
             limit: PRIMARY_RESULT_LIMIT,
@@ -280,7 +281,8 @@ fn compile_goals(
         &SearchRequest {
             query: task.to_owned(),
             entry_type: Some(EntryType::Goal),
-            status: None,
+            status_include: Vec::new(),
+            status_exclude: Vec::new(),
             tag: None,
             display_id: None,
             limit: 5,

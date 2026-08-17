@@ -158,6 +158,24 @@ pub enum EntryStatus {
     Archived,
 }
 
+impl EntryStatus {
+    pub const ALL: [Self; 13] = [
+        Self::Draft,
+        Self::Proposed,
+        Self::Pending,
+        Self::Approved,
+        Self::Accepted,
+        Self::Active,
+        Self::InProgress,
+        Self::Blocked,
+        Self::Completed,
+        Self::Rejected,
+        Self::Superseded,
+        Self::Abandoned,
+        Self::Archived,
+    ];
+}
+
 impl fmt::Display for EntryStatus {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {

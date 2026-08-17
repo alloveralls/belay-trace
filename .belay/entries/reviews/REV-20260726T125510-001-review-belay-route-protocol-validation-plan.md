@@ -5,8 +5,8 @@ type: review
 title: Review Belay Route protocol validation plan
 status: completed
 created_at: 2026-07-26T12:55:10+09:00
-updated_at: 2026-07-26T12:55:27+09:00
-revision: 6
+updated_at: 2026-08-17T18:48:29+09:00
+revision: 1
 tags: []
 links:
 - relation: references

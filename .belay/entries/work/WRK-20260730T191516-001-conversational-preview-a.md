@@ -5,8 +5,8 @@ type: work
 title: conversational-preview-approval
 status: in-progress
 created_at: 2026-07-30T19:15:16+09:00
-updated_at: 2026-07-30T20:39:25+09:00
-revision: 5
+updated_at: 2026-08-17T18:48:29+09:00
+revision: 1
 tags: []
 links:
 - relation: fulfills

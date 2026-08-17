@@ -60,6 +60,31 @@ Plan の `Delivery Map` は `ID` 列で task ID を定義し、`Goal item` 列�
 Plan が複数 Goal を扱う場合、`Goal item` に完全修飾参照を書く。Goal への
 リンクが一つだけなら、同じ Plan 内では `SC-001` の短縮形を使用できる。
 
+### 2.1 task の本文セクション
+
+Delivery Map の行は task を**定義**するが、内容は持てない。task の詳細は同じ
+Plan 内の `## T-NNN` セクションに書く。行が索引と状態、セクションが実行者の
+読む本体である。
+
+```markdown
+## T-001
+
+- **Objective**: 双方変更を検出する。
+- **Scope**: in — sync の比較経路。out — 競合解決の方針。
+- **Steps**: ...
+- **Acceptance**: SC-001 が満たされる。
+- **Verification**: `cargo test`
+```
+
+見出しは fragment を**定義しない**。`#t-001` の定義元はあくまで Delivery Map
+の `ID` 列であり、`plan_fragments` はその列だけを読む。見出しが定義元を兼ねると
+同じ ID が二箇所で定義され、§4 の一意性検査が壊れる。
+
+必須フィールドは Objective、Scope、Steps、Acceptance、Verification の5つ。
+これは「前提を共有していない読み手が着手できる」ための最小集合である。利用側は
+Difficulty や Owner などを追加してよく、`belay plan lint` は belay が要求しない
+フィールドを finding にしない。
+
 ## 3. 文書ごとの参照規格
 
 | 文書 | 定義する ID | 必須の構造化リンク |
@@ -108,6 +133,55 @@ Belay は新しい構造化リンクまたは Evidence target を保存すると
 Goal lint は Success Criterion の ID 欠落と重複を報告する。旧来の Goal hash
 fragment、`#sc-1`、Plan の `#task-t-1` は解決しない。既存文書にこれらの参照が
 残っている場合は、`#sc-NNN` / `#t-NNN` へ変換してから `belay rebuild` を実行する。
+
+Plan lint は Delivery Map の構造を報告する。task ID の形式と重複に加えて、
+`State` の値、`Goal item` 列の有無、そして §2.1 の本文セクションの有無と
+必須フィールドを検査する。Delivery Map を持たない Plan は skip であり、
+finding ではない。
+
+fragment が Delivery Map の行に解決しても対応する本文セクションが無い場合、
+それは fragment の解決失敗ではない。`belay show` はその欠落を明示して返し、
+`plan lint` が finding として報告する。
+
+## 5. 取得
+
+fragment は参照だけでなく取得にも使う。
+
+```sh
+belay show PLN-20260723T120100-001-deliver-safe-sync#t-001
+belay show GOAL-20260723T120000-001-safe-sync#sc-001
+```
+
+fragment を付けた `show` は、定義行（Delivery Map の行、または Success
+Criterion の項目）と、対応する本文セクションだけを返す。Plan 全体を読まずに
+一つの task を取得するための形式であり、task 数に比例して差が開く。
+
+canonical でない、存在しない、一意に解決しない fragment は、entry 全体の出力へ
+fallback せずエラーになる。要求していないものを黙って返さないためである。
+
+section の切り出しには `entry_chunks` を用いる。検索や context 生成と同じ
+分割規則であり、Markdown を別途解析し直すことはない。
+
+## 6. 並行書き込み
+
+複数のプロセスが同時に書いてよい。`add`、`link`、`status` はいずれも SQLite の
+IMMEDIATE トランザクションを開き、**そのロックを保持したまま** managed Markdown
+を書き、最後に commit する。したがって writer は interleave せず serialize する。
+display ID の採番もトランザクション内で行われるため衝突しない。
+
+保証の範囲:
+
+- 同時実行しても entry は失われず、ID は重複せず、SQLite と Markdown ミラーは
+  一致する。8 プロセスの同時 `add`、および同一 entry に対する 4 本の `link` と
+  1 本の `status` の競合で検証済み（`cargo test concurrent_`）。
+- ロック待ちは SQLite の busy timeout 5 秒。待ち時間がこれを超えると、破損では
+  なくエラーとして返る。極端に多い writer を同時に走らせる場合はこの上限に
+  注意する。
+- 保証されないのは、mirror 書き込みと commit の間でプロセスが強制終了した場合
+  である。この場合ミラーに DB が知らないファイルが残る。次の `belay sync` が
+  それを取り込むので復旧はするが、中断の窓が存在すること自体は事実である。
+
+この節はテストが示した範囲のみを述べている。範囲外の主張はしない。
 
 ID は同一性を表し、内容の正しさや関係の意味を保証しない。たとえば Evidence が
 `SC-001` を target に持つだけでは、そのテストが criterion を十分に検証したことに

@@ -5,8 +5,8 @@ type: review
 title: Review Explore node activation arbitration
 status: completed
 created_at: 2026-07-25T20:40:17+09:00
-updated_at: 2026-07-27T20:14:27+09:00
-revision: 7
+updated_at: 2026-08-17T18:48:29+09:00
+revision: 1
 tags: []
 links:
 - relation: reviews

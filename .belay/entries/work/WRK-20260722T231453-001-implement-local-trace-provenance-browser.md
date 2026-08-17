@@ -5,8 +5,8 @@ type: work
 title: Implement local trace provenance browser
 status: completed
 created_at: 2026-07-22T23:14:53+09:00
-updated_at: 2026-07-24T21:44:40+09:00
-revision: 4
+updated_at: 2026-08-17T18:48:29+09:00
+revision: 1
 tags: []
 links:
 - relation: implements
