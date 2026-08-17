@@ -9,10 +9,10 @@ updated_at: 2026-07-30T06:19:57+09:00
 revision: 10
 tags: []
 links:
-- relation: implements
-  id: PLN-20260726T104808-001-validate-the-belay-route-protocol-before-product
-- relation: fulfills
-  id: GOAL-20260726T014020-001-enable-responsible-traceable-evolutionary-develo
+  - relation: implements
+    id: PLN-20260726T104808-001-validate-the-belay-route-protocol-before-product
+  - relation: fulfills
+    id: GOAL-20260726T014020-001-enable-responsible-traceable-evolutionary-develo
 metadata: {}
 ---
 
@@ -52,6 +52,6 @@ metadata: {}
 
 ## Pull Request Delivery
 
-- Draft PR [#21](https://github.com/alloveralls/belay-trace/pull/21) targets `main` from `agent/route-mvp`.
+- Draft PR [#21](https://github.com/Ars-Transitus/belay-trace/pull/21) targets `main` from `agent/route-mvp`.
 - PR creation was explicitly approved by the project owner on 2026-07-30.
 - Merge is not approved.
