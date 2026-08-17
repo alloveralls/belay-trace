@@ -29,7 +29,7 @@ metadata: {}
 - Do not modify `~/.codex` or other user-global configuration.
 - Preserve the existing human-gated workflow and risk tiers.
 - Do not delegate Tier 3 implementation to the Luna implementer.
-- Keep the managed belay-trace block as the final managed section; `@RTK.md` remains after it as supplied by the project.
+- Keep the managed belay-trace block as the final section; `@RTK.md` appears before it as supplied by the project.
 
 ## Non-goals
 

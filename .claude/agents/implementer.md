@@ -2,8 +2,8 @@
 name: implementer
 description: Implements explicitly approved, bounded Tier 2 changes with clear acceptance criteria and focused verification.
 tools: Read, Grep, Glob, Edit, Write, Bash
-model: opus
-effort: high
+model: sonnet
+effort: low
 permissionMode: acceptEdits
 ---
 
