@@ -5,14 +5,15 @@ type: note
 title: handoff-agent-config
 status: active
 created_at: 2026-08-11T12:41:00+09:00
-updated_at: 2026-08-17T18:48:29+09:00
-revision: 1
+updated_at: 2026-08-11T12:44:02+09:00
+revision: 4
 tags: []
 links: []
 metadata: {}
 ---
 
 ## Current State
+
 - Fact: The handoff snapshot contains the prior 12 changed paths plus this Note.
 - Fact: Local bookmark `agent/configure-agent-models` points to commit `7adea6cb`.
 - Fact: GitHub PR #24 is OPEN and Draft; checks are passing and review is required.

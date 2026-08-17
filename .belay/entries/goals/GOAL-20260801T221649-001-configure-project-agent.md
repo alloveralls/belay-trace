@@ -5,8 +5,8 @@ type: goal
 title: configure-project-agent-models
 status: draft
 created_at: 2026-08-01T22:16:49+09:00
-updated_at: 2026-08-17T18:48:29+09:00
-revision: 1
+updated_at: 2026-08-01T22:23:22+09:00
+revision: 2
 tags: []
 links: []
 metadata: {}
@@ -29,7 +29,7 @@ metadata: {}
 - Do not modify `~/.codex` or other user-global configuration.
 - Preserve the existing human-gated workflow and risk tiers.
 - Do not delegate Tier 3 implementation to the Luna implementer.
-- Keep the managed belay-trace block as the final managed section; `@RTK.md` remains after it as supplied by the project.
+- Keep the managed belay-trace block as the final section; `@RTK.md` appears before it as supplied by the project.
 
 ## Non-goals
 

@@ -5,8 +5,8 @@ type: plan
 title: optimize-agent-workflow
 status: approved
 created_at: 2026-08-01T21:27:40+09:00
-updated_at: 2026-08-17T18:48:29+09:00
-revision: 1
+updated_at: 2026-08-01T21:36:16+09:00
+revision: 6
 tags: []
 links:
 - relation: supports

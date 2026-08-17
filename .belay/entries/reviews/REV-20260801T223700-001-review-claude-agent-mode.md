@@ -5,8 +5,8 @@ type: review
 title: review-claude-agent-models
 status: completed
 created_at: 2026-08-01T22:37:00+09:00
-updated_at: 2026-08-17T18:48:29+09:00
-revision: 1
+updated_at: 2026-08-01T22:38:55+09:00
+revision: 3
 tags: []
 links:
 - relation: reviews
