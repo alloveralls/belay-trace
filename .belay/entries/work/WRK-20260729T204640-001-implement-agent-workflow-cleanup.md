@@ -9,8 +9,8 @@ updated_at: 2026-07-29T21:13:32+09:00
 revision: 6
 tags: []
 links:
-- relation: fulfills
-  id: GOAL-20260729T204514-001-streamline-agent-workflow-output
+  - relation: fulfills
+    id: GOAL-20260729T204514-001-streamline-agent-workflow-output
 metadata: {}
 ---
 
@@ -41,6 +41,6 @@ metadata: {}
 
 ## Pull Request Delivery
 
-- Draft PR [#20](https://github.com/alloveralls/belay-trace/pull/20) targets `main` from `agent/guidance-refinement`.
+- Draft PR [#20](https://github.com/Ars-Transitus/belay-trace/pull/20) targets `main` from `agent/guidance-refinement`.
 - Route design Decisions and Notes remain on the child Bookmark `agent/route-design-notes` and are excluded from the PR.
 - PR creation was explicitly approved by the project owner in the 2026-07-29 conversation.

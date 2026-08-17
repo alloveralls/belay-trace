@@ -9,12 +9,12 @@ updated_at: 2026-07-27T20:14:27+09:00
 revision: 13
 tags: []
 links:
-- relation: references
-  id: WRK-20260723T192431-001-refine-browse-readability-and-trace-navigation
-- relation: follows-up
-  id: PLN-20260722T225244-001-add-a-local-trace-provenance-browser
-- relation: fulfills
-  id: GOAL-20260725T194008-001-make-explore-node-activation-reliable-and-unambi
+  - relation: references
+    id: WRK-20260723T192431-001-refine-browse-readability-and-trace-navigation
+  - relation: follows-up
+    id: PLN-20260722T225244-001-add-a-local-trace-provenance-browser
+  - relation: fulfills
+    id: GOAL-20260725T194008-001-make-explore-node-activation-reliable-and-unambi
 metadata: {}
 ---
 
@@ -76,14 +76,14 @@ metadata: {}
 
 ## Delivery Map
 
-| ID | Goal Criteria | Outcome / Task | State | Verification |
-| --- | --- | --- | --- | --- |
-| T-001 | SC-001, SC-002 | Explore nodeのsingle/double clickを排他的に調停し、保留timerとstale callbackを安全にcleanupする | verified | PR #16 Playwright interaction assertions; EVD-20260725T134154-003, EVD-20260725T134154-004 |
-| T-002 | SC-001, SC-002 | 実nodeへの反復double clickが詳細へ移動して展開せず、single clickが一度だけ展開するPlaywright回帰testを追加する | verified | PR #16 Playwright interaction assertions; EVD-20260725T134154-003, EVD-20260725T134154-004 |
-| T-003 | SC-003 | Accessible Goal listとkeyboard/canvas-independent導線が変更されず利用可能であることを確認する | verified | PR #16 Playwright accessibility assertionsと変更差分review; EVD-20260725T134154-005 |
-| T-004 | SC-004 | fmt、clippy、全target test、Playwright E2E、rebuild、doctorを実行する | verified | local Rust/rebuild/doctor結果とPR #16 CI; EVD-20260725T134154-001 |
-| T-005 | SC-001, SC-002, SC-003, SC-004 | fresh contextで実装diff、Goal、Plan、Evidenceを照合し、findingを解消または明示する | verified | Review entryをWorkに`reviews`でlinkし、全SC coverageを確認 |
-| T-006 | SC-001, SC-002, SC-003, SC-004 | 人間が修正後の操作結果を受入れ、Goal達成可否を判断する | verified | EVD-20260725T220721-001 human-acceptance Evidence |
+| ID    | Goal Criteria                  | Outcome / Task                                                                                                 | State    | Verification                                                                               |
+| ----- | ------------------------------ | -------------------------------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------ |
+| T-001 | SC-001, SC-002                 | Explore nodeのsingle/double clickを排他的に調停し、保留timerとstale callbackを安全にcleanupする                | verified | PR #16 Playwright interaction assertions; EVD-20260725T134154-003, EVD-20260725T134154-004 |
+| T-002 | SC-001, SC-002                 | 実nodeへの反復double clickが詳細へ移動して展開せず、single clickが一度だけ展開するPlaywright回帰testを追加する | verified | PR #16 Playwright interaction assertions; EVD-20260725T134154-003, EVD-20260725T134154-004 |
+| T-003 | SC-003                         | Accessible Goal listとkeyboard/canvas-independent導線が変更されず利用可能であることを確認する                  | verified | PR #16 Playwright accessibility assertionsと変更差分review; EVD-20260725T134154-005        |
+| T-004 | SC-004                         | fmt、clippy、全target test、Playwright E2E、rebuild、doctorを実行する                                          | verified | local Rust/rebuild/doctor結果とPR #16 CI; EVD-20260725T134154-001                          |
+| T-005 | SC-001, SC-002, SC-003, SC-004 | fresh contextで実装diff、Goal、Plan、Evidenceを照合し、findingを解消または明示する                             | verified | Review entryをWorkに`reviews`でlinkし、全SC coverageを確認                                 |
+| T-006 | SC-001, SC-002, SC-003, SC-004 | 人間が修正後の操作結果を受入れ、Goal達成可否を判断する                                                         | verified | EVD-20260725T220721-001 human-acceptance Evidence                                          |
 
 ## Acceptance and Evidence
 
@@ -101,6 +101,6 @@ metadata: {}
 
 ## References
 
-- [GitHub Issue #15](https://github.com/alloveralls/belay-trace/issues/15)
+- [GitHub Issue #15](https://github.com/Ars-Transitus/belay-trace/issues/15)
 - Existing Browse Plan: PLN-20260722T225244-001-add-a-local-trace-provenance-browser
 - Existing Browse Work: WRK-20260723T192431-001-refine-browse-readability-and-trace-navigation
