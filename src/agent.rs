@@ -124,6 +124,67 @@ belay route apply <run-id> --approve <exact-preview-hash>
   loses the Constraints and Non-goals that make it correct, so read those too
   before acting, and read the whole entry when the work spans tasks.
 
+## Entry body templates
+
+Use these compact templates when creating an unfamiliar entry. Keep only the
+sections that carry information; do not add empty placeholder sections.
+
+```markdown
+## Goal
+
+### Desired outcome
+- <outcome>
+
+### Success criteria
+- SC-001: <observable result and threshold>
+
+### Constraints
+- <constraint>
+
+### Non-goals
+- <explicitly excluded work>
+
+### Assumptions / Unknowns
+- Assumption: <assumption>
+- Unknown: <unknown or decision needed>
+```
+
+```markdown
+## Intent Brief
+
+### Problem
+- <problem>
+### Desired Outcome
+- <outcome>
+### Success Signals
+- <observable signal>
+### Constraints
+- <constraint>
+### Non-goals
+- <excluded work>
+### Assumptions
+- <assumption, explicitly labelled>
+### Unknowns / Decisions Needed
+- <unknown or decision>
+
+## Delivery Map
+| ID | Goal item | Outcome / Task | Actor | State | Verification / Evidence |
+| --- | --- | --- | --- | --- | --- |
+| T-001 | SC-001 | <task> | <actor> | not-started | <evidence> |
+
+## T-001
+- Objective: <objective>
+- Scope: <scope>
+- Steps: <steps>
+- Acceptance: <acceptance condition>
+- Verification: <command or evidence>
+```
+
+For `decision`, `work`, `review`, and `note`, use a short factual summary
+followed by typed labels as needed: `Fact`, `Human decision`, `Assumption`,
+`Hypothesis`, `Unknown`, `Evidence`, and `Follow-up`. Link entries with
+`belay link`; record verification separately with `belay verify record`.
+
 ## Classify the work
 
 - Tier 1 is a small, reversible change with clear scope. A separate Plan is optional.
@@ -191,7 +252,8 @@ Use a fresh context that did not implement the change to review the Intent Brief
 1. Use `belay add goal` for intent, then link Work/Decision entries to it with `fulfills`. Run `belay goal lint <goal-id>` after drafting or materially editing a Goal.
 2. Record validation with `belay verify record` and inspect `belay coverage` before release decisions.
 3. Run `belay sync` after direct managed Markdown edits. Use terminal statuses (`abandoned`, `rejected`, `superseded`, `archived`) instead of deleting trace history.
-4. Entry-body templates live in `TRACE_GUIDE.md`; read it only when authoring an unfamiliar entry type.
+4. Entry-body templates are embedded above, so authoring an unfamiliar entry
+   type does not depend on another repository-surface file.
 
 ## Conflict safety
 
