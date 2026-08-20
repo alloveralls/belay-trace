@@ -48,12 +48,16 @@ description: Use for Tier 2 or Tier 3 coding work, or whenever a task needs proj
 Use these forms directly. Do not run `--help` to discover syntax.
 
 ```sh
+belay context compile --format agent --budget 4000            # live working set; no task
 belay context compile "<task>" --format agent --budget 4000   # once per task, at start
+belay context compile --focus <plan-id>#t-001 --format agent --budget 2500
 belay context "<task>" --format agent --budget 2500           # fallback if compile is unavailable
 belay search "<query>"                                        # targeted follow-up discovery
-belay show <id>                                               # only when the full entry is needed
+belay search --include-archived                               # include archived history
+belay show <id>                                               # unique prefix or slug; full entry
 belay show <plan-id>#t-001                                    # one task; prefer over the whole Plan
 belay show <goal-id>#sc-001                                   # one Success Criterion
+belay archive candidates                                      # deterministic stale-history candidates
 belay add <goal|plan|decision|work|review|note> --title "<short-en-slug>"
 belay link <from-id> <to-id> --relation <rel>
     # rel: fulfills | supports | verifies | reviews | implements |
@@ -114,15 +118,24 @@ belay route apply <run-id> --approve <exact-preview-hash>
 - Write entry bodies as terse bullets. Delete scaffold sections that would
   only say "None." Exception: the Intent Brief's seven sections must stay
   non-empty; write `None identified` there.
-- Run `belay context compile` once at task start. For anything after that,
-  use `belay search`; do not re-compile at checkpoints.
-- Retrieve a fragment, not an entry, when you need one item. `belay show
-  <plan-id>#t-003` returns that task's Delivery Map row and its `## T-003`
-  section; `belay show <plan-id>` returns every task in the Plan. On a ten-task
-  Plan that is roughly an eighth of the output.
+- Run `belay context compile` with no task to see the live working set and Next
+  index, or once with a task at task start. For anything after that, use
+  `belay search` or `--focus`; do not re-compile at checkpoints.
+- Retrieve a fragment, not an entry, when you need one item. Prefer
+  `belay context compile --focus <plan-id>#t-nnn` so Constraints and Non-goals
+  travel with the task. `belay show <plan-id>#t-003` returns that task's
+  Delivery Map row and its `## T-003` section; `belay show <plan-id>` returns
+  every task in the Plan. On a ten-task Plan that is roughly an eighth of the
+  output.
   Cheap retrieval is not licence to skip the Intent Brief: a task read alone
   loses the Constraints and Non-goals that make it correct, so read those too
   before acting, and read the whole entry when the work spans tasks.
+- Display IDs may be a unique prefix or slug. Ambiguous matches fail; never
+  guess. Canonical IDs are what `show` prints.
+- `archived` means hide from default retrieval. Use `belay archive candidates`
+  then `belay status <id> archived` after judging. Do not archive a Goal or
+  Plan without human confirmation. `belay doctor` stale is skill/AGENTS drift,
+  not entry archive.
 
 ## Entry body templates
 
@@ -197,6 +210,7 @@ followed by typed labels as needed: `Fact`, `Human decision`, `Assumption`,
 1. Retrieve context per the command reference. Avoid broad reads of `.belay/entries/` unless a command identifies a specific source path.
 2. Draft an Intent Brief in the Plan with non-empty Problem, Desired Outcome, Success Signals, Constraints, Non-goals, Assumptions, and Unknowns / Decisions Needed sections.
 3. Separate facts, assumptions, unknowns, and human decisions. Ask before choices that materially change the outcome, affect security or data loss, create external commitments, or are irreversible. Explicitly record and proceed with small, reversible assumptions.
+4. Do not start implementation while Unknowns / Decisions Needed still name an open choice the implementer would have to guess. Park the unknown explicitly or get a human decision. If a light pass at Frame/Map leaves Unknowns or vague Steps, stop and redo the Map rather than handing it to implementation.
 
 ## Map
 
@@ -251,7 +265,7 @@ Use a fresh context that did not implement the change to review the Intent Brief
 
 1. Use `belay add goal` for intent, then link Work/Decision entries to it with `fulfills`. Run `belay goal lint <goal-id>` after drafting or materially editing a Goal.
 2. Record validation with `belay verify record` and inspect `belay coverage` before release decisions.
-3. Run `belay sync` after direct managed Markdown edits. Use terminal statuses (`abandoned`, `rejected`, `superseded`, `archived`) instead of deleting trace history.
+3. Run `belay sync` after direct managed Markdown edits. Use terminal statuses (`abandoned`, `rejected`, `superseded`, `archived`) instead of deleting trace history. `archived` hides an entry from default search and compile; it is not a substitute for `completed`.
 4. Entry-body templates are embedded above, so authoring an unfamiliar entry
    type does not depend on another repository-surface file.
 

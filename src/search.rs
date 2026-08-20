@@ -213,6 +213,28 @@ fn validate_request(request: &SearchRequest) -> Result<(), BelayError> {
     Ok(())
 }
 
+/// Hide `archived` from default retrieval unless the caller opted in or
+/// explicitly included that status.
+pub fn apply_default_archived_exclude(
+    include: &[EntryStatus],
+    exclude: &mut Vec<EntryStatus>,
+    include_archived: bool,
+) {
+    if include_archived
+        || include
+            .iter()
+            .any(|status| *status == EntryStatus::Archived)
+    {
+        return;
+    }
+    if !exclude
+        .iter()
+        .any(|status| *status == EntryStatus::Archived)
+    {
+        exclude.push(EntryStatus::Archived);
+    }
+}
+
 struct FilterBind {
     predicate: String,
     values: Vec<Value>,

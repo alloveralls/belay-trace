@@ -167,6 +167,8 @@ impl BrowseState {
             || !status_include.is_empty()
             || !status_exclude.is_empty();
         let results = if searching {
+            let mut status_exclude = status_exclude.clone();
+            search::apply_default_archived_exclude(&status_include, &mut status_exclude, false);
             search::search_connection(
                 &self.snapshot.connection,
                 &self.repository.database_path(),
@@ -174,7 +176,7 @@ impl BrowseState {
                     query: q.clone(),
                     entry_type: type_filter.as_deref().map(str::parse).transpose()?,
                     status_include: status_include.clone(),
-                    status_exclude: status_exclude.clone(),
+                    status_exclude,
                     tag: None,
                     display_id: None,
                     limit: 100,
